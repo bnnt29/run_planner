@@ -10,11 +10,13 @@ Starten:
 """
 
 import sys
+sys.setrecursionlimit(10**6)
 import math
 import uuid
 import json
 import os
 import numpy as np
+from dataclasses import dataclass, field
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 os.environ["QT_SCALE_FACTOR"] = "1"
@@ -238,8 +240,7 @@ class StationItem(ObjectItem):
 
     def __init__(self, name: str = "Station", color: QColor = None):
         super().__init__(name, color or QColor("#2563EB"), STATION_W, STATION_H_MIN)
-        self.conditions:list[Condition]= []
-        self.effects:list[Effect]      = []
+        self.rules: list[StationRule] = []
 
         self.in_port  = Port(PORT_TYPE.INPUT,  self)
         self.out_port = Port(PORT_TYPE.OUTPUT, self)
@@ -249,9 +250,31 @@ class StationItem(ObjectItem):
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _layout(self):
-        rows = len(self.conditions) + len(self.effects)
-        extra = max(0, rows - 1) * LINE_H
-        self._h = STATION_H_MIN + extra
+        # Calculate size based on rules content
+        font = QFont("Consolas", 7)
+        metrics = QFontMetrics(font)
+        
+        # Measure max width needed for rule text
+        max_width = 0
+        if self.rules:
+            for rule in self.rules:
+                rule_text = str(rule)
+                text_width = metrics.horizontalAdvance(rule_text)
+                max_width = max(max_width, text_width)
+        
+        # Set width with padding (8px left + 8px right)
+        padding_h = 16
+        if self.rules and max_width > 0:
+            self._w = min(max(max_width + padding_h, STATION_W), 600)  # max 600px width
+        else:
+            self._w = STATION_W
+        
+        # Calculate height based on number of rules
+        rows = len(self.rules) if self.rules else 1
+        content_height = rows * LINE_H + 5  # 5px after HEADER_H
+        self._h = HEADER_H + content_height
+        self._h = max(self._h, STATION_H_MIN)  # ensure minimum height
+        
         self._layout_ports([
             (self.attr_port, self._side_for_connections(self.attr_port.connections, "top", True)),
             (self.in_port, self._side_for_connections(self.in_port.connections, "left", True)),
@@ -318,36 +341,21 @@ class StationItem(ObjectItem):
             self.name
         )
 
-        # ── Conditions ──
+        # ── Rules ──
         y = HEADER_H + 5
         painter.setFont(QFont("Consolas", 7))
 
-        if self.conditions:
-            for cond in self.conditions:
-                text = str(cond)
+        if self.rules:
+            for rule in self.rules:
                 painter.setPen(QColor("#FCA5A5"))
                 painter.drawText(QRectF(8, y, self._w - 16, LINE_H),
-                                 Qt.AlignVCenter | Qt.AlignLeft, text)
+                                 Qt.AlignVCenter | Qt.AlignLeft, str(rule))
                 y += LINE_H
         else:
             painter.setPen(QColor(255, 255, 255, 60))
             painter.drawText(QRectF(8, y, self._w - 16, LINE_H),
-                             Qt.AlignVCenter, "keine Eingangsbedingungen")
+                             Qt.AlignVCenter, "keine Regeln")
             y += LINE_H
-
-        # Divider
-        if self.effects:
-            painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
-            painter.drawLine(QPointF(8, y), QPointF(self._w - 8, y))
-
-        if self.effects:
-            y += 2
-            for eff in self.effects:
-                text = str(eff)
-                painter.setPen(QColor("#86EFAC"))
-                painter.drawText(QRectF(8, y, self._w - 16, LINE_H),
-                                 Qt.AlignVCenter | Qt.AlignLeft, text)
-                y += LINE_H
 
     # ── Events ────────────────────────────────────────────────────────────────
 
@@ -366,10 +374,17 @@ class StationItem(ObjectItem):
     def flow_connections(self):
         return list(self.in_port.connections) + list(self.out_port.connections)
 
+    @property
+    def conditions(self):
+        return [cond for rule in self.rules for cond in rule.conditions]
+
+    @property
+    def effects(self):
+        return [eff for rule in self.rules for eff in rule.effects]
+
     def clone(self):
         item = StationItem(self.name, QColor(self.color))
-        item.conditions = [Condition(c.attribute, c.operator, c.value) for c in self.conditions]
-        item.effects = [Effect(e.action, e.attribute, e.value) for e in self.effects]
+        item.rules = [rule.clone() for rule in self.rules]
         item._layout()
         return item
 
@@ -430,8 +445,7 @@ class StationItem(ObjectItem):
             "color": QColor(self.color).name(),
             "x": float(self.pos().x()),
             "y": float(self.pos().y()),
-            "conditions": [self._serialize_condition(c) for c in self.conditions],
-            "effects": [self._serialize_effect(e) for e in self.effects],
+            "rules": [rule.to_json() for rule in self.rules],
         }
 
     @classmethod
@@ -439,8 +453,12 @@ class StationItem(ObjectItem):
         item = cls(data.get("name", "Station"), QColor(data.get("color", "#2563EB")))
         item.node_id = data.get("node_id") or item.node_id
         item.template_id = data.get("template_id") or item.template_id
-        item.conditions = [c for c in (cls._deserialize_condition(c, node_map) for c in data.get("conditions", [])) if c is not None]
-        item.effects = [e for e in (cls._deserialize_effect(e, node_map) for e in data.get("effects", [])) if e is not None]
+        if data.get("rules"):
+            item.rules = [StationRule.from_json(rule, node_map) for rule in data.get("rules", [])]
+        else:
+            conditions = [c for c in (cls._deserialize_condition(c, node_map) for c in data.get("conditions", [])) if c is not None]
+            effects = [e for e in (cls._deserialize_effect(e, node_map) for e in data.get("effects", [])) if e is not None]
+            item.rules = [StationRule(conditions=conditions, effects=effects)] if conditions or effects else []
         item._layout()
         item.setPos(float(data.get("x", 0.0)), float(data.get("y", 0.0)))
         return item
@@ -878,17 +896,17 @@ class Effect:
         match(self.action):
             case EFFECT_OP.ADD:
                 if not self.attribute in attrs or not attrs[self.attribute]:
-                    attrs[self.attribute] = 1 + self.value
+                    attrs[self.attribute] = self.value
                 else:
                     attrs[self.attribute] = attrs[self.attribute] + self.value
             case EFFECT_OP.SUBTRACT:
                 if not self.attribute in attrs or not attrs[self.attribute]:
-                    attrs[self.attribute] = 1 - self.value
+                    attrs[self.attribute] = - self.value
                 else:
                     attrs[self.attribute] = attrs[self.attribute] - self.value
             case EFFECT_OP.MULTIPLY:
                 if not self.attribute in attrs or not attrs[self.attribute]:
-                    attrs[self.attribute] = 1 * self.value
+                    attrs[self.attribute] = self.value
                 else:
                     count = int(attrs.get(self.attribute, 1))
                     attrs[self.attribute] = attrs[self.attribute] * self.value
@@ -911,6 +929,47 @@ class Effect:
     def __str__(self):
         a = self.attribute.name if isinstance(self.attribute, AttributeItem) else str(self.attribute)
         return f"⟨{a}⟩ {self.action.value} '{self.value}'"
+
+
+@dataclass
+class StationRule:
+    conditions: list[Condition] = field(default_factory=list)
+    effects: list[Effect] = field(default_factory=list)
+
+    def clone(self) -> "StationRule":
+        return StationRule(
+            conditions=[Condition(c.attribute, c.operator, c.value) for c in self.conditions],
+            effects=[Effect(e.attribute, e.action, e.value) for e in self.effects],
+        )
+
+    def to_json(self) -> dict:
+        return {
+            "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
+            "effects": [StationItem._serialize_effect(eff) for eff in self.effects],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict, node_map: dict) -> "StationRule":
+        conditions = [
+            cond for cond in (
+                StationItem._deserialize_condition(cond, node_map)
+                for cond in data.get("conditions", [])
+            )
+            if cond is not None
+        ]
+        effects = [
+            eff for eff in (
+                StationItem._deserialize_effect(eff, node_map)
+                for eff in data.get("effects", [])
+            )
+            if eff is not None
+        ]
+        return StationRule(conditions=conditions, effects=effects)
+
+    def __str__(self) -> str:
+        cond_text = " ∧ ".join(str(cond) for cond in self.conditions) if self.conditions else "immer"
+        eff_text = ", ".join(str(eff) for eff in self.effects) if self.effects else "keine Effekte"
+        return f"{cond_text} → {eff_text}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1167,8 +1226,6 @@ class ConditionRow(QWidget):
         op_key = self.op.itemData(idx)
         self.val.setVisible(op_key not in {CONDITION_OP.EXISTS, CONDITION_OP.NOT_EXISTS})
 
-    
-
     def get(self) -> Condition:
         return Condition(
             self.attr.currentData() or None,
@@ -1194,7 +1251,6 @@ class EffectRow(QWidget):
             self.act.addItem(lbl.value, lbl)
         idx = self._acts.index(eff.action) if eff.action in self._acts else 0
         self.act.setCurrentIndex(idx)
-        self.act.currentIndexChanged.connect(self._on_act)
 
         self.attr = QComboBox()
         self.attr.setFixedWidth(160)
@@ -1215,9 +1271,6 @@ class EffectRow(QWidget):
         lo.addWidget(self.val)
         lo.addWidget(btn)
 
-    def _on_act(self, idx):
-        self.val.setVisible(idx != 1)
-
     def get(self) -> Effect:
         return Effect(
             self.attr.currentData() or None,
@@ -1226,11 +1279,132 @@ class EffectRow(QWidget):
         )
 
 
+class RuleRow(QWidget):
+    removed = pyqtSignal(object)
+
+    def __init__(self, rule: StationRule, attribute_options:list[AttributeItem]=[], parent=None, allow_attribute_rules: bool = True):
+        super().__init__(parent)
+        self._rule = rule
+        self._attribute_options = attribute_options or []
+        self._allow_attribute_rules = allow_attribute_rules
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 6, 0, 6)
+        root.setSpacing(6)
+
+        title_row = QHBoxLayout()
+        title = QLabel("Regel")
+        title.setStyleSheet("color:#94A3B8; font-weight:bold;")
+        self.remove_btn = QPushButton("✕")
+        self.remove_btn.setObjectName("del_btn")
+        self.remove_btn.setFixedSize(22, 22)
+        self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.remove_btn)
+        root.addLayout(title_row)
+
+        self._cond_rows: list[ConditionRow] = []
+        self._eff_rows: list[EffectRow] = []
+
+        cond_grp = QGroupBox("Bedingungen")
+        cg = QVBoxLayout(cond_grp)
+        self._cond_scroll, self._cond_inner, self._cond_vbox = self._make_scroll()
+        cg.addWidget(self._cond_scroll)
+        for cond in rule.conditions:
+            self._add_cond(self._copy_condition(cond))
+        self._cond_add_btn = QPushButton("＋ Bedingung hinzufügen")
+        self._cond_add_btn.setObjectName("add_btn")
+        self._cond_add_btn.clicked.connect(lambda: self._add_cond(Condition()))
+        if not self._allow_attribute_rules:
+            self._cond_add_btn.setEnabled(False)
+            self._cond_add_btn.setToolTip("Bedingungen können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
+        cg.addWidget(self._cond_add_btn)
+        root.addWidget(cond_grp)
+
+        eff_grp = QGroupBox("Effekte")
+        eg = QVBoxLayout(eff_grp)
+        self._eff_scroll, self._eff_inner, self._eff_vbox = self._make_scroll()
+        eg.addWidget(self._eff_scroll)
+        for eff in rule.effects:
+            self._add_eff(Effect(eff.attribute, eff.action, eff.value))
+        self._eff_add_btn = QPushButton("＋ Effekt hinzufügen")
+        self._eff_add_btn.setObjectName("add_btn")
+        self._eff_add_btn.clicked.connect(lambda: self._add_eff(Effect()))
+        if not self._allow_attribute_rules:
+            self._eff_add_btn.setEnabled(False)
+            self._eff_add_btn.setToolTip("Effekte können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
+        eg.addWidget(self._eff_add_btn)
+        root.addWidget(eff_grp)
+
+    @staticmethod
+    def _make_scroll():
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(inner)
+        vbox.setAlignment(Qt.AlignTop)
+        vbox.setSpacing(2)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(inner)
+        return scroll, inner, vbox
+
+    @staticmethod
+    def _copy_condition(cond: Condition) -> Condition:
+        return Condition(cond.attribute, cond.operator, cond.value)
+
+    def _add_cond(self, cond: Condition):
+        row = ConditionRow(cond, self._attribute_options)
+        row.removed.connect(self._rm_cond)
+        self._cond_rows.append(row)
+        self._cond_vbox.addWidget(row)
+
+    def _rm_cond(self, row: ConditionRow):
+        self._cond_rows.remove(row)
+        self._cond_vbox.removeWidget(row)
+        row.deleteLater()
+
+    def _add_eff(self, eff: Effect):
+        row = EffectRow(eff, self._attribute_options)
+        row.removed.connect(self._rm_eff)
+        self._eff_rows.append(row)
+        self._eff_vbox.addWidget(row)
+
+    def _rm_eff(self, row: EffectRow):
+        self._eff_rows.remove(row)
+        self._eff_vbox.removeWidget(row)
+        row.deleteLater()
+
+    def result_data(self) -> StationRule:
+        return StationRule(
+            conditions=[row.get() for row in self._cond_rows],
+            effects=[row.get() for row in self._eff_rows],
+        )
+
+
 class SettingsDialog(QDialog):
     def __init__(self, item: QGraphicsItem, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(530)
         self.setStyleSheet(DIALOG_STYLE)
+
+    def _fit_to_content(self, width_margin: int = 24, height_margin: int = 24):
+        self.adjustSize()
+        hint = self.sizeHint()
+        screen = self.screen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            max_w = int(available.width() * 0.9)
+            max_h = int(available.height() * 0.9)
+        else:
+            max_w = hint.width() + width_margin
+            max_h = hint.height() + height_margin
+
+        target_w = min(max_w, hint.width() + width_margin)
+        target_h = min(max_h, hint.height() + height_margin)
+        self.resize(target_w, target_h)
         
 class StationDialog(SettingsDialog):
     def __init__(self, item: StationItem, attribute_options:list[AttributeItem]=[], parent=None):
@@ -1238,13 +1412,9 @@ class StationDialog(SettingsDialog):
         self.setWindowTitle(f"{item.name} bearbeiten")
         self._color = QColor(item.color)
         self._attribute_options = attribute_options or []
-        self._cond_rows: list[ConditionRow] = []
-        self._eff_rows:  list[EffectRow]    = []
+        self._rule_rows: list[RuleRow] = []
         self._build(item)
-
-    @staticmethod
-    def _copy_condition(cond: Condition) -> Condition:
-        return Condition(cond.attribute, cond.operator, cond.value)
+        self._fit_to_content(width_margin=36, height_margin=28)
 
     def _build(self, item: StationItem):
         root = QVBoxLayout(self)
@@ -1263,43 +1433,22 @@ class StationDialog(SettingsDialog):
         row.addWidget(self.col_btn)
         root.addLayout(row)
 
-        # ── Bedingungen ──
-        cond_grp = QGroupBox("Eingangsbedingungen  (Bedingung vor der Station)")
-        cg = QVBoxLayout(cond_grp)
-        self._cond_scroll, self._cond_inner, self._cond_vbox = self._make_scroll()
-        cg.addWidget(self._cond_scroll)
-        for c in item.conditions:
-            self._add_cond(self._copy_condition(c))
-        btn_c = QPushButton("＋  Bedingung hinzufügen")
-        btn_c.setObjectName("add_btn")
-        if len(item.attr_port.connections) <= 0:
-            btn_c.setEnabled(False)
-            btn_c.setToolTip("Bedingungen können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
+        # ── Regeln ──
+        rule_grp = QGroupBox("Regeln  (Bedingungen und Effekte gehören zusammen)")
+        rg = QVBoxLayout(rule_grp)
+        self._rule_scroll, self._rule_inner, self._rule_vbox = self._make_scroll()
+        rg.addWidget(self._rule_scroll)
+        can_add_rule_parts = len(item.attr_port.connections) > 0
+        if item.rules:
+            for rule in item.rules:
+                self._add_rule(rule.clone(), can_add_rule_parts)
         else:
-            btn_c.setEnabled(True)
-            btn_c.setToolTip("")
-            btn_c.clicked.connect(lambda: self._add_cond(Condition()))
-        cg.addWidget(btn_c)
-        root.addWidget(cond_grp)
-
-        # ── Effekte ──
-        eff_grp = QGroupBox("Ausgangseffekte  (Änderungen nach der Station)")
-        eg = QVBoxLayout(eff_grp)
-        self._eff_scroll, self._eff_inner, self._eff_vbox = self._make_scroll()
-        eg.addWidget(self._eff_scroll)
-        for e in item.effects:
-            self._add_eff(Effect(e.attribute, e.action, e.value))
-        btn_e = QPushButton("＋  Effekt hinzufügen")
-        btn_e.setObjectName("add_btn")
-        if len(item.attr_port.connections) <= 0:
-            btn_e.setEnabled(False)
-            btn_e.setToolTip("Effekte können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
-        else:
-            btn_e.setEnabled(True)
-            btn_e.setToolTip("")
-            btn_e.clicked.connect(lambda: self._add_eff(Effect()))
-        eg.addWidget(btn_e)
-        root.addWidget(eff_grp)
+            self._add_rule(StationRule(), can_add_rule_parts)
+        btn_r = QPushButton("＋  Regel hinzufügen")
+        btn_r.setObjectName("add_btn")
+        btn_r.clicked.connect(lambda: self._add_rule(StationRule(), can_add_rule_parts))
+        rg.addWidget(btn_r)
+        root.addWidget(rule_grp)
 
         # ── Buttons ──
         btns = QDialogButtonBox()
@@ -1312,17 +1461,7 @@ class StationDialog(SettingsDialog):
 
     @staticmethod
     def _make_scroll():
-        scroll  = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(160)
-        inner   = QWidget()
-        inner.setStyleSheet("background: transparent;")
-        vbox    = QVBoxLayout(inner)
-        vbox.setAlignment(Qt.AlignTop)
-        vbox.setSpacing(2)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        scroll.setWidget(inner)
-        return scroll, inner, vbox
+        return RuleRow._make_scroll()
 
     def _refresh_color_btn(self):
         self.col_btn.setStyleSheet(
@@ -1335,34 +1474,24 @@ class StationDialog(SettingsDialog):
             self._color = c
             self._refresh_color_btn()
 
-    def _add_cond(self, cond: Condition):
-        w = ConditionRow(cond, self._attribute_options)
-        w.removed.connect(self._rm_cond)
-        self._cond_rows.append(w)
-        self._cond_vbox.addWidget(w)
+    def _add_rule(self, rule: StationRule, allow_attribute_rules: bool = True):
+        row = RuleRow(rule, self._attribute_options, allow_attribute_rules=allow_attribute_rules)
+        row.removed.connect(self._rm_rule)
+        self._rule_rows.append(row)
+        self._rule_vbox.addWidget(row)
 
-    def _rm_cond(self, w: ConditionRow):
-        self._cond_rows.remove(w)
-        self._cond_vbox.removeWidget(w)
-        w.deleteLater()
-
-    def _add_eff(self, eff: Effect):
-        w = EffectRow(eff, self._attribute_options)
-        w.removed.connect(self._rm_eff)
-        self._eff_rows.append(w)
-        self._eff_vbox.addWidget(w)
-
-    def _rm_eff(self, w: EffectRow):
-        self._eff_rows.remove(w)
-        self._eff_vbox.removeWidget(w)
-        w.deleteLater()
+    def _rm_rule(self, row: RuleRow):
+        self._rule_rows.remove(row)
+        self._rule_vbox.removeWidget(row)
+        row.deleteLater()
+        if not self._rule_rows:
+            self._add_rule(StationRule())
 
     def result_data(self):
         return {
             "name":       self.name_edit.text().strip() or "Station",
             "color":      self._color,
-            "conditions": [r.get() for r in self._cond_rows],
-            "effects":    [r.get() for r in self._eff_rows],
+            "rules":      [r.result_data() for r in self._rule_rows],
         }
 
 
@@ -1372,6 +1501,7 @@ class AttributeDialog(SettingsDialog):
         self.setWindowTitle(f"{item.name} bearbeiten")
         self._color = QColor(item.color)
         self._build(item)
+        self._fit_to_content()
     
     def _build(self, item:AttributeItem):
         lo = QVBoxLayout(self)
@@ -1423,6 +1553,7 @@ class ConnectionDialog(SettingsDialog):
         self._attribute_options = attribute_options or []
         self._cond_rows: list[ConditionRow] = []
         self._build(item)
+        self._fit_to_content()
 
     @staticmethod
     def _copy_condition(cond: Condition) -> Condition:
@@ -1500,6 +1631,7 @@ class TextDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         lo.addWidget(btns)
+        self.adjustSize()
 
     def get_text(self) -> str:
         return self.editor.toPlainText()
@@ -1542,8 +1674,8 @@ class FlowScene(QGraphicsScene):
     @staticmethod
     def _apply_effects(state: dict, effects: list[Effect]) -> dict:
         attrs = dict(state)
-        for eff in effects:
-            attrs = eff.apply(attrs)
+        for effect in effects:
+            attrs = effect.apply(attrs)
         return attrs
 
     @staticmethod
@@ -1638,6 +1770,8 @@ class FlowScene(QGraphicsScene):
                 self._remove_conn(c)
             self.removeItem(item)
         elif isinstance(item, AttributeItem):
+            for station in self._station_items():
+                self._remove_related_conditions_for_attribute(item, station)
             for c in list(item.all_connections()):
                 self._remove_conn(c)
             self.removeItem(item)
@@ -1778,13 +1912,14 @@ class FlowScene(QGraphicsScene):
 
         removed = 0
 
-        old_station_count = len(station.conditions)
-        station.conditions = [cond for cond in station.conditions if cond.attribute is not attribute]
-        removed += old_station_count - len(station.conditions)
+        for rule in station.rules:
+            old_station_count = len(rule.conditions)
+            rule.conditions = [cond for cond in rule.conditions if cond.attribute is not attribute]
+            removed += old_station_count - len(rule.conditions)
 
-        old_effect_count = len(station.effects)
-        station.effects = [eff for eff in station.effects if eff.attribute is not attribute]
-        removed += old_effect_count - len(station.effects)
+            old_effect_count = len(rule.effects)
+            rule.effects = [eff for eff in rule.effects if eff.attribute is not attribute]
+            removed += old_effect_count - len(rule.effects)
 
         for flow_conn in station.flow_connections():
             old_conn_count = len(flow_conn.conditions)
@@ -1856,8 +1991,7 @@ class FlowScene(QGraphicsScene):
             d = dlg.result_data()
             item.name = d["name"]
             item.color        = d["color"]
-            item.conditions   = d["conditions"]
-            item.effects      = d["effects"]
+            item.rules        = d["rules"]
             self._refresh_template(item)
             self.update_connections_for(item)
             self.validate_all()
@@ -1947,16 +2081,20 @@ class FlowScene(QGraphicsScene):
 
         # Finde Root-Stationen (keine eingehenden Flow-Kanten)
         root_stations = [s for s in stations if len(flow_preds[s]) == 0]
-        
+        station_state_cache = {s:[] for s in stations}
         # Durchsuche Graph mittels DFS von jeder Root-Station
         conn_states = {c:[] for c in self._connections}
 
         def dfs_validate(station: StationItem, incoming_state: dict):
             """DFS Traversierung mit Zustandspropagation und Validierung."""
-            #if station in visited_stations:
-                #return
-            #visited_stations.add(station)
-
+            
+            all_states = True
+            for state in CONNECTION_STATE:
+                 if state not in conn_states:
+                    all_states = False
+                    
+            if all_states:
+                return
             # Validiere eingehende Flow-Verbindungen
             for conn, src_station in flow_preds[station]:
                 # Prüfe Bedingungen auf der Verbindung und der Zielstation
@@ -1982,6 +2120,7 @@ class FlowScene(QGraphicsScene):
                         conn._invalid_reasons.append(
                                 f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)} ({station_cond_states})"
                             )
+                    return
                 elif not len(conn_conds_ok)<=0 and not len(station_conds_ok)<=0:
                     conn_states[conn].append(CONNECTION_STATE.CONDITIONAL_INVALID)
                     #conn.set_state(CONNECTION_STATE.INVALID)
@@ -1993,12 +2132,30 @@ class FlowScene(QGraphicsScene):
                         conn._invalid_reasons.append(
                                 f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)} ({station_cond_states})"
                             )
-
-            # Wende Effekte an, um Ausgabe-State zu erhalten
-            output_state = self._apply_effects(incoming_state, station.effects)
-            # Rekursiv validiere Nachfolger-Stationen
-            for conn, succ_station in flow_succs[station]:
-                dfs_validate(succ_station, output_state)
+                    return
+            if station in station_state_cache and station_state_cache[station] == incoming_state:
+                return
+            station_state_cache[station] = incoming_state
+            # Wende Regeln an, um Ausgabe-State zu erhalten
+            output_state = dict(incoming_state)
+            if len(station.rules)<=0:
+                for conn, succ_station in flow_succs[station]:
+                    try:
+                        dfs_validate(succ_station, output_state)
+                    except:
+                        print("reached max recursion depth")
+                        self.status_message.emit("Maximale Rekursionstiefe erreicht. Möglicherweise gibt es einen Zyklus im Graphen.")
+            for rule in station.rules:
+                if all(cond.check(output_state) for cond in rule.conditions):
+                    output_state = self._apply_effects(output_state, rule.effects)
+                    # Rekursiv validiere Nachfolger-Stationen
+                    for conn, succ_station in flow_succs[station]:
+                        try:
+                            dfs_validate(succ_station, output_state)
+                        except:
+                            print("reached max recursion depth")
+                            self.status_message.emit("Maximale Rekursionstiefe erreicht. Möglicherweise gibt es einen Zyklus im Graphen.")
+                            
 
         # Starte DFS von jeder Root-Station mit leerem State
         for root in root_stations:
@@ -2986,8 +3143,8 @@ class MainWindow(QMainWindow):
             painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
             painter.drawText(QRectF(rect.left() + 8, rect.top() + 8, rect.width() - 16, 18), Qt.AlignLeft, station.name)
             painter.setFont(QFont("Consolas", 8))
-            painter.drawText(QRectF(rect.left() + 8, rect.top() + 28, rect.width() - 16, 14), Qt.AlignLeft, f"Bedingungen: {len(station.conditions)}")
-            painter.drawText(QRectF(rect.left() + 8, rect.top() + 42, rect.width() - 16, 14), Qt.AlignLeft, f"Effekte: {len(station.effects)}")
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 28, rect.width() - 16, 14), Qt.AlignLeft, f"Regeln: {len(station.rules)}")
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 42, rect.width() - 16, 14), Qt.AlignLeft, f"Bedingungen: {len(station.conditions)}  /  Effekte: {len(station.effects)}")
 
     def _paint_pdf_clean_flow_page(self, painter: QPainter, printer: QPrinter):
         page_rect = printer.pageRect(QPrinter.DevicePixel)
