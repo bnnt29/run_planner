@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QGraphicsScene, QGraphicsView, QGraphicsItem, QGraphicsEllipseItem,
     QGraphicsPathItem, QGraphicsRectItem, QFrame, QDialog, QDialogButtonBox,
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
-    QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar,
+    QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar, QMenu,
     QSpacerItem, QStatusBar, QFileDialog, QDoubleSpinBox
 )
 from PyQt5.QtCore import (
@@ -458,7 +458,7 @@ class AttributeItem(ObjectItem):
     
     @staticmethod
     def Placeholder():
-        item = AttributeItem("⟨Attribut⟩", QColor("#FBBF24"))
+        item = AttributeItem("⟨Attribut⟩")
         item.setOpacity(0.6)
         return item
     
@@ -580,6 +580,33 @@ class ConnectionItem(QGraphicsPathItem):
 
     # ── Path ──────────────────────────────────────────────────────────────────
 
+    def _parallel_offset(self) -> float:
+        if self.src_port is None or self.dst_port is None:
+            return 0.0
+
+        scene = self.scene()
+        if scene is None or not hasattr(scene, "_connections"):
+            return 0.0
+
+        siblings = [
+            conn for conn in scene._connections
+            if conn.src_port is self.src_port and conn.dst_port is self.dst_port
+        ]
+        if self not in siblings:
+            siblings.append(self)
+
+        if len(siblings) <= 1:
+            return 0.0
+
+        try:
+            index = siblings.index(self)
+        except ValueError:
+            siblings = sorted(siblings, key=id)
+            index = siblings.index(self)
+
+        spread = 24.0
+        return (index - (len(siblings) - 1) / 2.0) * spread
+
     def _rebuild(self):
         if self.src_port is None:
             return
@@ -606,6 +633,25 @@ class ConnectionItem(QGraphicsPathItem):
             end.x() - end_tangent.x() * cp,
             end.y() - end_tangent.y() * cp,
         )
+
+        lateral_offset = self._parallel_offset()
+        if abs(lateral_offset) > 0.001:
+            length = math.hypot(dx, dy)
+            if length > 1e-6:
+                nx = -dy / length
+                ny = dx / length
+            else:
+                tangent = QPointF(start_tangent.x() + end_tangent.x(), start_tangent.y() + end_tangent.y())
+                tangent_len = math.hypot(tangent.x(), tangent.y())
+                if tangent_len <= 1e-6:
+                    nx, ny = 0.0, -1.0
+                else:
+                    nx = -tangent.y() / tangent_len
+                    ny = tangent.x() / tangent_len
+
+            c1 = QPointF(c1.x() + nx * lateral_offset, c1.y() + ny * lateral_offset)
+            c2 = QPointF(c2.x() + nx * lateral_offset, c2.y() + ny * lateral_offset)
+
         path = QPainterPath(start)
         path.cubicTo(c1, c2, end)
         self.setPath(path)
@@ -1351,19 +1397,20 @@ class AttributeDialog(SettingsDialog):
 
     def _refresh_color_btn(self):
         self.col_btn.setStyleSheet(
-            f"background:{QColor(self._color).name()}; border:1px solid #475569; border-radius:4px;"
+            f"background:{self._color.name()}; border:1px solid #475569; border-radius:4px;"
         )
 
     def _pick_color(self):
-        c = QColorDialog.getColor(QColor(self._color), self)
+        c = QColorDialog.getColor(self._color, self)
         if c.isValid():
             self._color = c
             self._refresh_color_btn()
+        print(self._color.name(), c.name())
 
     def result_data(self):
         return {
             "name": self.name_edit.text().strip() or "Attribut",
-            "color": QColor(self._color),
+            "color": self._color,
         }
 
 
@@ -1509,6 +1556,33 @@ class FlowScene(QGraphicsScene):
     def _attribute_items(self) -> list[AttributeItem]:
         return [i for i in self.items() if isinstance(i, AttributeItem)]
 
+    @staticmethod
+    def _attribute_name_key(name: str) -> str:
+        return (name or "").strip().lower()
+
+    def attribute_name_exists(self, name: str, exclude_item: AttributeItem = None) -> bool:
+        key = self._attribute_name_key(name)
+        if not key:
+            return False
+        for item in self._attribute_items():
+            if item is exclude_item:
+                continue
+            if self._attribute_name_key(item.name) == key:
+                return True
+        return False
+
+    def make_unique_attribute_name(self, base_name: str, exclude_item: AttributeItem = None) -> str:
+        base = (base_name or "Attribut").strip() or "Attribut"
+        if not self.attribute_name_exists(base, exclude_item):
+            return base
+
+        idx = 2
+        while True:
+            candidate = f"{base} ({idx})"
+            if not self.attribute_name_exists(candidate, exclude_item):
+                return candidate
+            idx += 1
+
     def _connected_attributes(self, station: StationItem) -> list[AttributeItem]:
         attrs = []
         seen = set()
@@ -1555,6 +1629,43 @@ class FlowScene(QGraphicsScene):
                 return item.attr_port if self._can_connect(src_port, item.attr_port) else None
             return item.in_port if self._can_connect(src_port, item.in_port) else None
         return None
+
+    def _delete_scene_item(self, item):
+        if isinstance(item, ConnectionItem):
+            self._remove_conn(item)
+        elif isinstance(item, StationItem):
+            for c in list(item.all_connections()):
+                self._remove_conn(c)
+            self.removeItem(item)
+        elif isinstance(item, AttributeItem):
+            for c in list(item.all_connections()):
+                self._remove_conn(c)
+            self.removeItem(item)
+        elif isinstance(item, TextBlockItem):
+            self.removeItem(item)
+        self.validate_all()
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.scenePos(), QTransform())
+        if item is None:
+            super().contextMenuEvent(event)
+            return
+
+        if isinstance(item, Port):
+            item = item.parentItem()
+
+        if not isinstance(item, (ConnectionItem, StationItem, AttributeItem, TextBlockItem)):
+            super().contextMenuEvent(event)
+            return
+
+        menu = QMenu()
+        delete_action = menu.addAction("Löschen")
+        chosen = menu.exec_(event.screenPos())
+        if chosen == delete_action:
+            self._delete_scene_item(item)
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
     # ── Maus-Interaktion ─────────────────────────────────────────────────────
 
@@ -1634,6 +1745,20 @@ class FlowScene(QGraphicsScene):
     def _remove_conn(self, conn: ConnectionItem):
         src_item = conn.src_port.parentItem() if conn.src_port else None
         dst_item = conn.dst_port.parentItem() if conn.dst_port else None
+        kind = self._connection_kind(conn)
+
+        if kind == CONNECTION_KIND.ATTRIBUTE and isinstance(src_item, AttributeItem) and isinstance(dst_item, StationItem):
+            still_connected = any(
+                other is not conn
+                and other.src_port is not None
+                and other.dst_port is not None
+                and other.src_port.parentItem() is src_item
+                and other.dst_port.parentItem() is dst_item
+                for other in dst_item.attr_port.connections
+            )
+            if not still_connected:
+                self._remove_related_conditions_for_attribute(src_item, dst_item)
+
         if conn.src_port and conn in conn.src_port.connections:
             conn.src_port.connections.remove(conn)
         if conn.dst_port and conn in conn.dst_port.connections:
@@ -1646,6 +1771,49 @@ class FlowScene(QGraphicsScene):
         if hasattr(dst_item, "_layout") and dst_item is not src_item:
             self.update_connections_for(dst_item)
         self.validate_all()
+
+    def _remove_related_conditions_for_attribute(self, attribute: AttributeItem, station: StationItem):
+        if attribute is None or station is None:
+            return 0
+
+        removed = 0
+
+        old_station_count = len(station.conditions)
+        station.conditions = [cond for cond in station.conditions if cond.attribute is not attribute]
+        removed += old_station_count - len(station.conditions)
+
+        old_effect_count = len(station.effects)
+        station.effects = [eff for eff in station.effects if eff.attribute is not attribute]
+        removed += old_effect_count - len(station.effects)
+
+        for flow_conn in station.flow_connections():
+            old_conn_count = len(flow_conn.conditions)
+            flow_conn.conditions = [cond for cond in flow_conn.conditions if cond.attribute is not attribute]
+            removed += old_conn_count - len(flow_conn.conditions)
+
+        return removed
+
+    def remove_arrow_conditions_for_attribute_name(self, attribute_name: str) -> int:
+        name_key = self._attribute_name_key(attribute_name)
+        if not name_key:
+            return 0
+
+        removed = 0
+
+        for conn in self._connections:
+            if self._connection_kind(conn) != CONNECTION_KIND.FLOW:
+                continue
+            old_conn_count = len(conn.conditions)
+            conn.conditions = [
+                cond for cond in conn.conditions
+                if self._attribute_name_key(getattr(getattr(cond, "attribute", None), "name", "")) != name_key
+            ]
+            removed += old_conn_count - len(conn.conditions)
+
+        if removed > 0:
+            self.validate_all()
+
+        return removed
 
     def update_connections_for(self, item):
         if item is None:
@@ -1696,15 +1864,24 @@ class FlowScene(QGraphicsScene):
 
     def open_attribute_editor(self, item: AttributeItem):
         parent = self.views()[0] if self.views() else None
-        dlg    = AttributeDialog(item, parent)
-        if dlg.exec_() == QDialog.Accepted:
+        while True:
+            dlg = AttributeDialog(item, parent)
+            if dlg.exec_() != QDialog.Accepted:
+                break
             d = dlg.result_data()
-            old_name = item.name
+            if self.attribute_name_exists(d["name"], exclude_item=item):
+                QMessageBox.warning(
+                    parent,
+                    "Attributname bereits vergeben",
+                    "Jedes Attribut braucht einen eindeutigen Namen. Bitte einen anderen Namen wählen.",
+                )
+                continue
             item.name  = d["name"]
             item.color = d["color"]
             self._refresh_template(item)
             self.update_connections_for(item)
             self.validate_all()
+            break
 
     def open_connection_editor(self, conn: ConnectionItem):
         parent = self.views()[0] if self.views() else None
@@ -1943,6 +2120,8 @@ class FlowView(QGraphicsView):
             palette = getattr(scene, "palette_widget", None)
             item = palette.clone_template(kind, template_id) if palette else None
             if item is not None:
+                if isinstance(item, AttributeItem):
+                    item.name = scene.make_unique_attribute_name(item.name)
                 scene.addItem(item)
                 item.setPos(pos - QPointF(item.boundingRect().width() / 2, item.boundingRect().height() / 2))
                 scene.clearSelection()
@@ -2007,6 +2186,36 @@ class TemplateListWidget(QListWidget):
         drag.setPixmap(pix)
         drag.setHotSpot(QPoint(max(1, pix.width() // 2), max(1, pix.height() // 2)))
         drag.exec_(Qt.CopyAction)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            item = self.currentItem()
+            template_key = item.data(Qt.UserRole) if item is not None else None
+            if template_key and self.palette_widget.can_remove_template(self.kind, template_key):
+                self.palette_widget.remove_template(self.kind, template_key)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item is None:
+            super().contextMenuEvent(event)
+            return
+
+        template_key = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        can_delete = self.palette_widget.can_remove_template(self.kind, template_key)
+        delete_action = menu.addAction("Aus Palette löschen")
+        delete_action.setEnabled(can_delete)
+        if not can_delete:
+            delete_action.setToolTip("Nur möglich, wenn keine zugehörigen Objekte im Editor liegen.")
+        chosen = menu.exec_(self.viewport().mapToGlobal(event.pos()))
+        if chosen == delete_action and can_delete:
+            self.palette_widget.remove_template(self.kind, template_key)
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
 
 class Palette(QWidget):
@@ -2073,6 +2282,10 @@ class Palette(QWidget):
 
         self.station_list.itemDoubleClicked.connect(lambda item: self.add_template_to_scene("station", item.data(Qt.UserRole)))
         self.attribute_list.itemDoubleClicked.connect(lambda item: self.add_template_to_scene("attribute", item.data(Qt.UserRole)))
+
+    @staticmethod
+    def _attribute_key(name: str) -> str:
+        return (name or "").strip().lower()
 
     def set_scene(self, scene):
         self.scene_widget = scene
@@ -2154,7 +2367,22 @@ class Palette(QWidget):
                 existing.setText(label)
                 existing.setIcon(self._make_icon(QColor(item.color), "Station"))
         elif isinstance(item, AttributeItem):
-            template_id = item.template_id
+            template_id = self._attribute_key(item.name)
+            if not template_id:
+                return
+
+            stale_keys = [
+                key for key, template in self._attribute_templates.items()
+                if getattr(template, "template_id", None) == item.template_id and key != template_id
+            ]
+            for key in stale_keys:
+                self._attribute_templates.pop(key, None)
+                li_old = self._attribute_items.pop(key, None)
+                if li_old is not None:
+                    row_old = self.attribute_list.row(li_old)
+                    if row_old >= 0:
+                        self.attribute_list.takeItem(row_old)
+
             label = item.name
             self._attribute_templates[template_id] = item.clone()
             existing = self._attribute_items.get(template_id)
@@ -2178,12 +2406,59 @@ class Palette(QWidget):
             source_item = None
         return source_item.clone() if source_item else None
 
+    def can_remove_template(self, kind: str, template_id: str) -> bool:
+        if self.scene_widget is None:
+            return True
+
+        if kind == "station":
+            return not any(
+                isinstance(item, StationItem) and getattr(item, "template_id", None) == template_id
+                for item in self.scene_widget.items()
+            )
+
+        if kind == "attribute":
+            return not any(
+                isinstance(item, AttributeItem) and self._attribute_key(item.name) == template_id
+                for item in self.scene_widget.items()
+            )
+
+        return True
+
+    def remove_template(self, kind: str, template_id: str):
+        if kind == "station":
+            self._station_templates.pop(template_id, None)
+            li = self._station_items.pop(template_id, None)
+            if li is not None:
+                row = self.station_list.row(li)
+                if row >= 0:
+                    self.station_list.takeItem(row)
+        elif kind == "attribute":
+            template = self._attribute_templates.pop(template_id, None)
+            attr_name = template.name if isinstance(template, AttributeItem) else ""
+            li = self._attribute_items.pop(template_id, None)
+            if li is not None:
+                row = self.attribute_list.row(li)
+                if row >= 0:
+                    self.attribute_list.takeItem(row)
+                attr_name = li.text() or attr_name
+
+            if self.scene_widget is not None:
+                removed = self.scene_widget.remove_arrow_conditions_for_attribute_name(attr_name)
+                if removed > 0:
+                    self.scene_widget.status_message.emit(
+                        f"{removed} Pfeil-Bedingung(en) nach Attribut-Entfernung aus Palette gelöscht."
+                    )
+
+        self._sync_placeholders()
+
     def add_template_to_scene(self, kind: str, template_id: str):
         if self.scene_widget is None:
             return None
         item = self.clone_template(kind, template_id)
         if item is None:
             return None
+        if isinstance(item, AttributeItem):
+            item.name = self.scene_widget.make_unique_attribute_name(item.name)
         self.scene_widget.addItem(item)
         center = self.scene_widget.sceneRect().center()
         br = item.boundingRect()
@@ -2382,6 +2657,8 @@ class MainWindow(QMainWindow):
         item.setPos(view_center - QPointF(br.width() / 2, br.height() / 2))
 
     def _add_item_to_scene(self, item):
+        if isinstance(item, AttributeItem):
+            item.name = self.scene.make_unique_attribute_name(item.name)
         self.scene.addItem(item)
         self._place_item_center(item)
         self.scene.clearSelection()
@@ -2394,7 +2671,7 @@ class MainWindow(QMainWindow):
         self._add_item_to_scene(item)
 
     def _new_attribute(self):
-        item = AttributeItem("Neues Attribut", 1)
+        item = AttributeItem("Neues Attribut")
         self._add_item_to_scene(item)
 
     def _new_textblock(self):
@@ -2530,6 +2807,7 @@ class MainWindow(QMainWindow):
         node_map = {}
         for a in data.get("attributes", []):
             item = AttributeItem.from_json(a)
+            item.name = self.scene.make_unique_attribute_name(item.name)
             self.scene.addItem(item)
             self.scene._register_template(item)
             node_map[item.node_id] = item
