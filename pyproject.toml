@@ -1,0 +1,24 @@
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project]
+name = "run_planner"
+version = "0.0.1"
+authors = [
+  { name="Bennet Richter", email="bennet.richter@tu-dortmund.de" },
+]
+description = "run_planner"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+  "PyQt5",
+]
+
+[project.optional-dependencies]
+eval = ["pandas", "plotly", "ipykernel", "nbformat"]
+remote = ["paramiko"]
