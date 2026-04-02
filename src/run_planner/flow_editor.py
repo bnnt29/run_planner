@@ -14,6 +14,10 @@ import math
 import uuid
 import json
 import os
+os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+os.environ["QT_SCALE_FACTOR"] = "1"
+from enum import Enum
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -21,7 +25,7 @@ from PyQt5.QtWidgets import (
     QGraphicsPathItem, QGraphicsRectItem, QFrame, QDialog, QDialogButtonBox,
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
     QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar,
-    QSpacerItem, QStatusBar, QFileDialog
+    QSpacerItem, QStatusBar, QFileDialog, QDoubleSpinBox
 )
 from PyQt5.QtCore import (
     Qt, QRectF, QPointF, QLineF, QPoint, QRect, pyqtSignal, QMimeData,
@@ -34,161 +38,6 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtPrintSupport import QPrinter
 from collections import deque
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DATENMODELLE
-# ══════════════════════════════════════════════════════════════════════════════
-
-class Condition:
-    """Vorbedingung an einem Produktattribut."""
-    SUBJECT_VALUE = "value"
-    SUBJECT_COUNT = "count"
-
-    OP_EXISTS     = "exists"
-    OP_NOT_EXISTS = "not_exists"
-    OP_EQUALS     = "equals"
-    OP_NOT_EQUALS = "not_equals"
-    OP_GREATER    = "greater"
-    OP_GREATER_EQ = "greater_eq"
-    OP_LESS       = "less"
-    OP_LESS_EQ    = "less_eq"
-
-    SUBJECT_LABELS = {
-        SUBJECT_VALUE: "Attribut",
-        SUBJECT_COUNT: "Anzahl",
-    }
-
-    OP_LABELS = {
-        OP_EXISTS:     "existiert",
-        OP_NOT_EXISTS: "existiert nicht",
-        OP_EQUALS:     "= Eintrag",
-        OP_NOT_EQUALS: "≠ Eintrag",
-        OP_GREATER:    ">",
-        OP_GREATER_EQ: ">=",
-        OP_LESS:       "<",
-        OP_LESS_EQ:    "<=",
-    }
-
-    def __init__(self, attribute="", subject=None, operator=None, value=""):
-        self.attribute = attribute
-        self.subject   = subject or self.SUBJECT_VALUE
-        self.operator  = operator or self.OP_EXISTS
-        self.value     = value
-
-    @staticmethod
-    def _state_for(attrs: dict, attribute: str):
-        state = attrs.get(attribute)
-        if isinstance(state, dict):
-            return state
-        if state is None:
-            return None
-        return {"value": state, "count": 1}
-
-    def _as_number(self, value):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
-
-    def check(self, attrs: dict) -> bool:
-        state = self._state_for(attrs, self.attribute)
-        if self.subject == self.SUBJECT_COUNT:
-            count = 0 if state is None else self._as_number(state.get("count", 0))
-            if self.operator == self.OP_EXISTS:
-                return count > 0
-            if self.operator == self.OP_NOT_EXISTS:
-                return count <= 0
-            target = self._as_number(self.value)
-            if self.operator == self.OP_EQUALS:
-                return count == target
-            if self.operator == self.OP_NOT_EQUALS:
-                return count != target
-            if self.operator == self.OP_GREATER:
-                return count > target
-            if self.operator == self.OP_GREATER_EQ:
-                return count >= target
-            if self.operator == self.OP_LESS:
-                return count < target
-            if self.operator == self.OP_LESS_EQ:
-                return count <= target
-            return True
-
-        if self.operator == self.OP_EXISTS:
-            return state is not None
-        if self.operator == self.OP_NOT_EXISTS:
-            return state is None
-        current = None if state is None else state.get("value")
-        if self.operator == self.OP_EQUALS:
-            return current == self.value
-        if self.operator == self.OP_NOT_EQUALS:
-            return current != self.value
-        return True
-
-    def __str__(self):
-        a = self.attribute or "?"
-        if self.subject == self.SUBJECT_COUNT:
-            prefix = f"Anzahl(⟨{a}⟩)"
-            if self.operator == self.OP_EXISTS:
-                return f"{prefix} vorhanden"
-            if self.operator == self.OP_NOT_EXISTS:
-                return f"{prefix} fehlt"
-            if self.operator in {self.OP_EQUALS, self.OP_NOT_EQUALS,
-                                 self.OP_GREATER, self.OP_GREATER_EQ,
-                                 self.OP_LESS, self.OP_LESS_EQ}:
-                return f"{prefix} {self.OP_LABELS.get(self.operator, self.operator)} {self.value}"
-            return prefix
-        if self.operator == self.OP_EXISTS:
-            return f"⟨{a}⟩ vorhanden"
-        if self.operator == self.OP_NOT_EXISTS:
-            return f"⟨{a}⟩ fehlt"
-        if self.operator == self.OP_EQUALS:
-            return f"⟨{a}⟩ = '{self.value}'"
-        if self.operator == self.OP_NOT_EQUALS:
-            return f"⟨{a}⟩ ≠ '{self.value}'"
-        return ""
-
-
-class Effect:
-    """Ausgangseffekt auf ein Produktattribut."""
-    ACT_ADD    = "add"
-    ACT_REMOVE = "remove"
-    ACT_SET    = "set"
-
-    ACT_LABELS = {
-        ACT_ADD:    "Hinzufügen",
-        ACT_REMOVE: "Entfernen",
-        ACT_SET:    "Setzen / Überschreiben",
-    }
-
-    def __init__(self, action=None, attribute="", value=""):
-        self.action    = action or self.ACT_ADD
-        self.attribute = attribute
-        self.value     = value
-
-    def apply(self, attrs: dict) -> dict:
-        """Wendet den Effekt an und gibt ein neues dict zurück."""
-        attrs = dict(attrs)
-        if self.action in (self.ACT_ADD, self.ACT_SET):
-            current = attrs.get(self.attribute)
-            count = 1
-            if isinstance(current, dict):
-                count = max(1, int(current.get("count", 1)))
-            attrs[self.attribute] = {"value": self.value, "count": count}
-        elif self.action == self.ACT_REMOVE:
-            attrs.pop(self.attribute, None)
-        return attrs
-
-    def __str__(self):
-        a = self.attribute or "?"
-        if self.action == self.ACT_ADD:
-            return f"+ ⟨{a}⟩ = '{self.value}'"
-        if self.action == self.ACT_REMOVE:
-            return f"− ⟨{a}⟩"
-        if self.action == self.ACT_SET:
-            return f"~ ⟨{a}⟩ = '{self.value}'"
-        return ""
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GRAFIK-KONSTANTEN
@@ -214,41 +63,44 @@ PALETTE_COLORS = [
 #  PORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-class Port(QGraphicsEllipseItem):
-    INPUT  = "input"
+class PORT_TYPE(str, Enum):
+    INPUT = "input"
     OUTPUT = "output"
-    ATTR_INPUT  = "attr_input"
+    ATTR_INPUT = "attr_input"
     ATTR_OUTPUT = "attr_output"
 
-    def __init__(self, port_type: str, parent: QGraphicsItem):
+class Port(QGraphicsEllipseItem):
+
+    def __init__(self, port_type: PORT_TYPE, parent: QGraphicsItem):
         r = PORT_R
         super().__init__(-r, -r, r * 2, r * 2, parent)
-        self.port_type   = port_type
-        self.connections = []          # list[ConnectionItem]
+        self.port_type:PORT_TYPE   = port_type
+        self.connections:list[ConnectionItem] = []
         self._base_style()
         self.setAcceptHoverEvents(True)
-        self.setZValue(20)
+        self.setZValue(5)
         self.setCursor(Qt.CrossCursor)
 
     def _base_style(self):
-        if self.port_type == self.INPUT:
-            self.setBrush(QBrush(QColor("#22C55E")))
-            self.setPen(QPen(QColor("#15803D"), 1.5))
-        elif self.port_type == self.ATTR_INPUT:
-            self.setBrush(QBrush(QColor("#F59E0B")))
-            self.setPen(QPen(QColor("#B45309"), 1.5))
-        elif self.port_type == self.ATTR_OUTPUT:
-            self.setBrush(QBrush(QColor("#FBBF24")))
-            self.setPen(QPen(QColor("#B45309"), 1.5))
-        else:
-            self.setBrush(QBrush(QColor("#3B82F6")))
-            self.setPen(QPen(QColor("#1D4ED8"), 1.5))
+        match(self.port_type):
+            case PORT_TYPE.INPUT:
+                self.setBrush(QBrush(QColor("#22C55E")))
+                self.setPen(QPen(QColor("#15803D"), 1.5))
+            case PORT_TYPE.ATTR_INPUT:
+                self.setBrush(QBrush(QColor("#F59E0B")))
+                self.setPen(QPen(QColor("#B45309"), 1.5))
+            case PORT_TYPE.ATTR_OUTPUT:
+                self.setBrush(QBrush(QColor("#FBBF24")))
+                self.setPen(QPen(QColor("#B45309"), 1.5))
+            case PORT_TYPE.OUTPUT:
+                self.setBrush(QBrush(QColor("#3B82F6")))
+                self.setPen(QPen(QColor("#1D4ED8"), 1.5))
 
     def is_input(self) -> bool:
-        return self.port_type in {self.INPUT, self.ATTR_INPUT}
+        return self.port_type == PORT_TYPE.INPUT or self.port_type == PORT_TYPE.ATTR_INPUT
 
     def is_output(self) -> bool:
-        return self.port_type in {self.OUTPUT, self.ATTR_OUTPUT}
+        return self.port_type == PORT_TYPE.OUTPUT or self.port_type == PORT_TYPE.ATTR_OUTPUT
 
     def hoverEnterEvent(self, event):
         self.setBrush(QBrush(QColor("#FCD34D")))
@@ -260,22 +112,14 @@ class Port(QGraphicsEllipseItem):
     def scene_pos(self) -> QPointF:
         return self.mapToScene(QPointF(0, 0))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  STATIONSITEM
-# ══════════════════════════════════════════════════════════════════════════════
-
-class StationItem(QGraphicsItem):
-    ItemType = QGraphicsItem.UserType + 1
-
-    def __init__(self, name: str = "Station", color: QColor = None):
+class ObjectItem(QGraphicsItem):
+    def __init__(self, name: str = "Object", color: QColor = None, w: int = 200, h: int = 72):
         super().__init__()
-        self.station_name = name
-        self.color        = color or QColor("#2563EB")
-        self.node_id      = uuid.uuid4().hex
-        self.conditions   = []   # list[Condition]
-        self.effects      = []   # list[Effect]
-        self.template_id  = uuid.uuid4().hex
+        
+        self.name:str = name
+        self.color:QColor           = color or QColor("#505050")
+        self.node_id         = uuid.uuid4().hex
+        self.template_id     = uuid.uuid4().hex
 
         self.setFlags(
             QGraphicsItem.ItemIsMovable |
@@ -283,13 +127,27 @@ class StationItem(QGraphicsItem):
             QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
+        
+        self.setZValue(0)
+        
+        self._w = w
+        self._h = h
+        
+# ══════════════════════════════════════════════════════════════════════════════
+#  STATIONSITEM
+# ══════════════════════════════════════════════════════════════════════════════
 
-        self._w = STATION_W
-        self._h = STATION_H_MIN
+class StationItem(ObjectItem):
+    ItemType = QGraphicsItem.UserType + 1
 
-        self.in_port  = Port(Port.INPUT,  self)
-        self.out_port = Port(Port.OUTPUT, self)
-        self.attr_port = Port(Port.ATTR_INPUT, self)
+    def __init__(self, name: str = "Station", color: QColor = None):
+        super().__init__(name, color or QColor("#2563EB"), STATION_W, STATION_H_MIN)
+        self.conditions:list[Condition]= []
+        self.effects:list[Effect]      = []
+
+        self.in_port  = Port(PORT_TYPE.INPUT,  self)
+        self.out_port = Port(PORT_TYPE.OUTPUT, self)
+        self.attr_port = Port(PORT_TYPE.ATTR_INPUT, self)
         self._layout()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -360,7 +218,7 @@ class StationItem(QGraphicsItem):
         painter.drawText(
             QRectF(10, 2, self._w - 20, HEADER_H - 4),
             Qt.AlignVCenter | Qt.AlignLeft,
-            self.station_name
+            self.name
         )
 
         # ── Conditions ──
@@ -412,36 +270,101 @@ class StationItem(QGraphicsItem):
         return list(self.in_port.connections) + list(self.out_port.connections)
 
     def clone(self):
-        item = StationItem(self.station_name, QColor(self.color))
-        item.conditions = [Condition(c.attribute, c.subject, c.operator, c.value) for c in self.conditions]
+        item = StationItem(self.name, QColor(self.color))
+        item.conditions = [Condition(c.attribute, c.operator, c.value) for c in self.conditions]
         item.effects = [Effect(e.action, e.attribute, e.value) for e in self.effects]
         item._layout()
         return item
 
+    @staticmethod
+    def _serialize_condition(cond: "Condition") -> dict:
+        return {
+            "attribute": cond.attribute.node_id,
+            "operator": cond.operator.value if isinstance(cond.operator, CONDITION_OP) else str(cond.operator),
+            "value": cond.value,
+        }
 
-class AttributeItem(QGraphicsItem):
+    @staticmethod
+    def _deserialize_condition(data: dict, node_map: dict) -> "Condition":
+        operator_raw = data.get("operator", CONDITION_OP.EXISTS.value)
+        try:
+            operator = CONDITION_OP(operator_raw)
+        except Exception:
+            operator = CONDITION_OP.EXISTS
+        
+        attr = node_map.get(data.get("attribute"))
+        if attr is None:
+            return None
+        return Condition(
+            attr,
+            operator,
+            data.get("value", 0.0),
+        )
+
+    @staticmethod
+    def _serialize_effect(eff: "Effect") -> dict:
+        return {
+            "attribute": eff.attribute.node_id,
+            "action": eff.action.value if isinstance(eff.action, EFFECT_OP) else str(eff.action),
+            "value": eff.value,
+        }
+
+    @staticmethod
+    def _deserialize_effect(data: dict, node_map: dict) -> "Effect":
+        action_raw = data.get("action", EFFECT_OP.SET.value)
+        try:
+            action = EFFECT_OP(action_raw)
+        except Exception:
+            action = EFFECT_OP.SET
+        attr = node_map.get(data.get("attribute"))
+        if attr is None:
+            return None
+        return Effect(
+            attr,
+            action,
+            data.get("value", 0.0),
+        )
+
+    def to_json(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "template_id": self.template_id,
+            "name": self.name,
+            "color": QColor(self.color).name(),
+            "x": float(self.pos().x()),
+            "y": float(self.pos().y()),
+            "conditions": [self._serialize_condition(c) for c in self.conditions],
+            "effects": [self._serialize_effect(e) for e in self.effects],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict, node_map: dict) -> "StationItem":
+        item = cls(data.get("name", "Station"), QColor(data.get("color", "#2563EB")))
+        item.node_id = data.get("node_id") or item.node_id
+        item.template_id = data.get("template_id") or item.template_id
+        item.conditions = [cls._deserialize_condition(c, node_map) for c in data.get("conditions", [])]
+        item.effects = [cls._deserialize_effect(e, node_map) for e in data.get("effects", [])]
+        item._layout()
+        item.setPos(float(data.get("x", 0.0)), float(data.get("y", 0.0)))
+        return item
+    
+    def __str__(self):
+        return self.name
+
+class AttributeItem(ObjectItem):
     ItemType = QGraphicsItem.UserType + 4
 
-    def __init__(self, name: str = "Attribut", count: int = 1, color: QColor = None):
-        super().__init__()
-        self.attribute_name = name
-        self.attribute_count = count
-        self.color           = color or QColor("#F59E0B")
-        self.node_id         = uuid.uuid4().hex
-        self.template_id     = uuid.uuid4().hex
-
-        self.setFlags(
-            QGraphicsItem.ItemIsMovable |
-            QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemSendsGeometryChanges
-        )
-        self.setAcceptHoverEvents(True)
-
-        self._w = 180
-        self._h = 64
-        self.out_port = Port(Port.ATTR_OUTPUT, self)
+    def __init__(self, name: str = "Attribut", color: QColor = None):
+        super().__init__(name, color or QColor("#FBBF24"), 180, 64)
+        self.out_port = Port(PORT_TYPE.ATTR_OUTPUT, self)
         self._layout()
-
+    
+    @staticmethod
+    def Placeholder():
+        item = AttributeItem("⟨Attribut⟩", QColor("#FBBF24"))
+        item.setOpacity(0.6)
+        return item
+    
     def _layout(self):
         self.out_port.setPos(self._w, self._h / 2)
         self.prepareGeometryChange()
@@ -482,11 +405,7 @@ class AttributeItem(QGraphicsItem):
 
         painter.setPen(QColor(255, 255, 255, 240))
         painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        painter.drawText(QRectF(10, 8, self._w - 20, 18), Qt.AlignLeft | Qt.AlignVCenter, self.attribute_name)
-
-        painter.setFont(QFont("Consolas", 8))
-        painter.drawText(QRectF(10, 42, self._w - 20, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                         f"Anzahl: {self.attribute_count}")
+        painter.drawText(QRectF(10, 8, self._w - 20, 18), Qt.AlignLeft | Qt.AlignVCenter, self.name)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
@@ -501,9 +420,333 @@ class AttributeItem(QGraphicsItem):
         return list(self.out_port.connections)
 
     def clone(self):
-        item = AttributeItem(self.attribute_name, self.attribute_count, QColor(self.color))
+        item = AttributeItem(self.name, QColor(self.color))
         item._layout()
         return item
+
+    def to_json(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "template_id": self.template_id,
+            "name": self.name,
+            "color": QColor(self.color).name(),
+            "x": float(self.pos().x()),
+            "y": float(self.pos().y()),
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> "AttributeItem":
+        item = cls(data.get("name", "Attribut"), QColor(data.get("color", "#FBBF24")))
+        item.node_id = data.get("node_id") or item.node_id
+        item.template_id = data.get("template_id") or item.template_id
+        item._layout()
+        item.setPos(float(data.get("x", 0.0)), float(data.get("y", 0.0)))
+        return item
+    
+    def __str__(self):
+        return self.name
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  VERBINDUNGS-ITEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CONNECTION_STATE(int, Enum):
+    UNKNOWN = 0
+    VALID   = 1
+    INVALID = 2
+    CONDITIONAL_VALID = 3
+    CONDITIONAL_INVALID = 4
+    
+class CONNECTION_COLOR(Enum):
+    UNKNOWN = QColor("#94A3B8")
+    VALID   = QColor("#22C55E")
+    INVALID = QColor("#EF4444")
+    CONDITIONAL_VALID = QColor("#0B0EF5")
+    CONDITIONAL_INVALID = QColor("#9A1DEE")
+
+class ConnectionItem(QGraphicsPathItem):
+    ItemType = QGraphicsItem.UserType + 3
+
+    def __init__(self, src_port: Port, dst_port: Port = None):
+        super().__init__()
+        self.src_port:Port   = src_port
+        self.dst_port:Port   = dst_port
+        self.conditions:list[Condition] = []
+        self._invalid_reasons = []
+        self._state:CONNECTION_STATE = CONNECTION_STATE.UNKNOWN
+        self._drag_end  = None
+        self.setZValue(10)
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self._rebuild()
+
+    # ── Path ──────────────────────────────────────────────────────────────────
+
+    def _rebuild(self):
+        if self.src_port is None:
+            return
+        start = self.src_port.scene_pos()
+        end   = self._drag_end if self._drag_end else (
+            self.dst_port.scene_pos() if self.dst_port else start
+        )
+        dx = end.x() - start.x()
+        cp = max(abs(dx) * 0.55, 80)
+        c1 = QPointF(start.x() + cp, start.y())
+        c2 = QPointF(end.x()  - cp, end.y())
+        path = QPainterPath(start)
+        path.cubicTo(c1, c2, end)
+        self.setPath(path)
+        self._apply_style()
+
+    def update_path(self):
+        self._rebuild()
+
+    def set_drag_end(self, pt: QPointF):
+        self._drag_end = pt
+        self._rebuild()
+
+    def finalize(self, dst_port: Port):
+        self.dst_port  = dst_port
+        self._drag_end = None
+        self._rebuild()
+
+    # ── Style ─────────────────────────────────────────────────────────────────
+
+    def _apply_style(self):
+        match(self._state):
+            case CONNECTION_STATE.VALID:
+                col = CONNECTION_COLOR.VALID
+            case CONNECTION_STATE.INVALID:
+                col = CONNECTION_COLOR.INVALID
+            case CONNECTION_STATE.CONDITIONAL_VALID:
+                col = CONNECTION_COLOR.CONDITIONAL_VALID
+            case CONNECTION_STATE.CONDITIONAL_INVALID:
+                col = CONNECTION_COLOR.CONDITIONAL_INVALID
+            case CONNECTION_STATE.UNKNOWN:
+                col = CONNECTION_COLOR.UNKNOWN
+            case _:
+                col = CONNECTION_COLOR.UNKNOWN
+        self.setPen(QPen(col.value, 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+
+    def set_state(self, state):
+        if self._state != state:
+            self._state = state
+            self._apply_style()
+
+    def doubleClickTarget(self):
+        return self.src_port.parentItem() if self.src_port else None
+
+    # ── Paint (Pfeilspitze) ───────────────────────────────────────────────────
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if self.isSelected():
+            sel_pen = QPen(QColor("#FCD34D"), 5, Qt.SolidLine, Qt.RoundCap)
+            painter.setPen(sel_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self.path())
+
+        super().paint(painter, option, widget)
+
+        # Arrow at endpoint
+        path = self.path()
+        if path.isEmpty():
+            return
+        end    = path.pointAtPercent(1.0)
+        near   = path.pointAtPercent(0.97)
+        angle  = math.atan2(-(end.y() - near.y()), end.x() - near.x())
+        arr_sz = 10
+        a1     = angle + math.radians(150)
+        a2     = angle - math.radians(150)
+        arrow  = QPolygonF([
+            end,
+            QPointF(end.x() + arr_sz * math.cos(a1),
+                    end.y() - arr_sz * math.sin(a1)),
+            QPointF(end.x() + arr_sz * math.cos(a2),
+                    end.y() - arr_sz * math.sin(a2)),
+        ])
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(self.pen().color()))
+        painter.drawPolygon(arrow)
+
+        if self.conditions:
+            # Ein Stern markiert Bedingungen direkt im Editor.
+            mid = path.pointAtPercent(0.5)
+            star_rect = QRectF(mid.x() - 9, mid.y() - 13, 18, 18)
+            painter.setPen(QPen(QColor("#FCD34D"), 1.2))
+            painter.setBrush(QBrush(QColor(15, 23, 42, 230)))
+            painter.drawRoundedRect(star_rect, 4, 4)
+            painter.setPen(QColor("#FCD34D"))
+            painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+            painter.drawText(star_rect, Qt.AlignCenter, "*")
+
+    def boundingRect(self) -> QRectF:
+        return super().boundingRect().adjusted(-15, -15, 15, 15)
+
+    def mouseDoubleClickEvent(self, event):
+        scene = self.scene()
+        if scene and hasattr(scene, "open_connection_editor"):
+            scene.open_connection_editor(self)
+
+    @staticmethod
+    def _resolve_port(item, port_type_raw: str):
+        try:
+            port_type = PORT_TYPE(port_type_raw)
+        except Exception:
+            return None
+
+        if isinstance(item, StationItem):
+            if port_type == PORT_TYPE.INPUT:
+                return item.in_port
+            if port_type == PORT_TYPE.OUTPUT:
+                return item.out_port
+            if port_type == PORT_TYPE.ATTR_INPUT:
+                return item.attr_port
+        if isinstance(item, AttributeItem) and port_type == PORT_TYPE.ATTR_OUTPUT:
+            return item.out_port
+        return None
+
+    def to_json(self) -> dict:
+        return {
+            "src_node_id": self.src_port.parentItem().node_id if self.src_port else None,
+            "src_port_type": self.src_port.port_type.value if self.src_port else None,
+            "dst_node_id": self.dst_port.parentItem().node_id if self.dst_port else None,
+            "dst_port_type": self.dst_port.port_type.value if self.dst_port else None,
+            "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict, node_map: dict):
+        src_item = node_map.get(data.get("src_node_id"))
+        dst_item = node_map.get(data.get("dst_node_id"))
+        if src_item is None or dst_item is None:
+            return None
+
+        src_port = cls._resolve_port(src_item, data.get("src_port_type"))
+        dst_port = cls._resolve_port(dst_item, data.get("dst_port_type"))
+        if src_port is None or dst_port is None:
+            return None
+
+        conn = cls(src_port)
+        conn.conditions = [StationItem._deserialize_condition(cond, node_map) for cond in data.get("conditions", [])]
+        conn.finalize(dst_port)
+        src_port.connections.append(conn)
+        dst_port.connections.append(conn)
+        return conn
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DATENMODELLE
+# ══════════════════════════════════════════════════════════════════════════════
+class CONDITION_OP(str, Enum):
+    EXISTS     = "> 0"
+    NOT_EXISTS = "= 0"
+    EQUALS     = "="
+    NOT_EQUALS = "≠"
+    GREATER    = ">"
+    GREATER_EQ = ">="
+    LESS       = "<"
+    LESS_EQ    = "<="
+    
+class Condition:
+    """Vorbedingung an einem Produktattribut."""
+
+    def __init__(self, attribute:AttributeItem = None, operator:CONDITION_OP=CONDITION_OP.EXISTS, value:float=0.0):
+        self.attribute:AttributeItem = attribute
+        self.operator:CONDITION_OP   = operator
+        self.value:float     = value
+
+    def _as_number(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def check(self, attrs: dict) -> bool:
+        count = 0.0 if self.attribute not in attrs or attrs[self.attribute] is None else attrs[self.attribute]
+        match(self.operator):
+            case CONDITION_OP.EXISTS:
+                return count > 0
+            case CONDITION_OP.NOT_EXISTS:
+                return count == 0
+            case CONDITION_OP.EQUALS:
+                return count == self._as_number(self.value)
+            case CONDITION_OP.NOT_EQUALS:
+                return count != self._as_number(self.value)
+            case CONDITION_OP.GREATER:
+                return count > self._as_number(self.value)
+            case CONDITION_OP.GREATER_EQ:
+                return count >= self._as_number(self.value)
+            case CONDITION_OP.LESS:
+                return count < self._as_number(self.value)
+            case CONDITION_OP.LESS_EQ:
+                return count <= self._as_number(self.value)
+
+    def __str__(self):
+        a = self.attribute.name if isinstance(self.attribute, AttributeItem) else str(self.attribute)
+        prefix = f"⟨{a}⟩"
+        match(self.operator):
+            case CONDITION_OP.EXISTS:
+                return f"{prefix} vorhanden"
+            case CONDITION_OP.NOT_EXISTS:
+                return f"{prefix} fehlt"
+        return f"{prefix} {self.operator.value} {self.value}"
+
+class EFFECT_OP(str, Enum):
+    ADD     = "+"
+    SUBTRACT= "-"
+    MULTIPLY= "*"
+    DIVIDE  = "/"
+    SET     = "="
+    MOD     = "%"
+
+class Effect:
+    """Ausgangseffekt auf ein Produktattribut."""
+
+    def __init__(self, attribute:AttributeItem = None, action:EFFECT_OP=EFFECT_OP.SET, value:float=0.0):
+        self.action    = action or EFFECT_OP.ADD
+        self.attribute = attribute
+        self.value     = value
+
+    def apply(self, attrs: dict) -> dict:
+        """Wendet den Effekt an und gibt ein neues dict zurück."""
+        attrs = dict(attrs)
+        match(self.action):
+            case EFFECT_OP.ADD:
+                if not self.attribute in attrs or not attrs[self.attribute]:
+                    attrs[self.attribute] = 1 + self.value
+                else:
+                    attrs[self.attribute] = attrs[self.attribute] + self.value
+            case EFFECT_OP.SUBTRACT:
+                if not self.attribute in attrs or not attrs[self.attribute]:
+                    attrs[self.attribute] = 1 - self.value
+                else:
+                    attrs[self.attribute] = attrs[self.attribute] - self.value
+            case EFFECT_OP.MULTIPLY:
+                if not self.attribute in attrs or not attrs[self.attribute]:
+                    attrs[self.attribute] = 1 * self.value
+                else:
+                    count = int(attrs.get(self.attribute, 1))
+                    attrs[self.attribute] = attrs[self.attribute] * self.value
+            case EFFECT_OP.DIVIDE:
+                if not self.attribute in attrs or not attrs[self.attribute]:
+                    attrs[self.attribute] = 1 / self.value
+                else:
+                    count = int(attrs.get(self.attribute, 1))
+                    attrs[self.attribute] = attrs[self.attribute] / self.value
+            case EFFECT_OP.MOD:
+                if not self.attribute in attrs or not attrs[self.attribute]:
+                    attrs[self.attribute] = 1 % self.value
+                else:
+                    count = int(attrs.get(self.attribute, 1))
+                    attrs[self.attribute] = attrs[self.attribute] % self.value
+            case EFFECT_OP.SET:
+                attrs[self.attribute] = self.value
+        attrs.pop(self.attribute, None)
+        return attrs
+
+    def __str__(self):
+        a = self.attribute.name if isinstance(self.attribute, AttributeItem) else str(self.attribute)
+        return f"⟨{a}⟩ {self.action.value} '{self.value}'"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -585,136 +828,6 @@ class TextBlockItem(QGraphicsItem):
     def mouseDoubleClickEvent(self, event):
         if self.scene():
             self.scene().open_text_editor(self)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  VERBINDUNGS-ITEM
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ConnectionItem(QGraphicsPathItem):
-    ItemType = QGraphicsItem.UserType + 3
-
-    STATE_UNKNOWN = None
-    STATE_VALID   = True
-    STATE_INVALID = False
-
-    COLOR_UNKNOWN = QColor("#94A3B8")
-    COLOR_VALID   = QColor("#22C55E")
-    COLOR_INVALID = QColor("#EF4444")
-
-    def __init__(self, src_port: Port, dst_port: Port = None):
-        super().__init__()
-        self.src_port   = src_port
-        self.dst_port   = dst_port
-        self.conditions = []
-        self._invalid_reasons = []
-        self._state     = self.STATE_UNKNOWN
-        self._drag_end  = None
-        self.setZValue(-5)
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
-        self._rebuild()
-
-    # ── Path ──────────────────────────────────────────────────────────────────
-
-    def _rebuild(self):
-        if self.src_port is None:
-            return
-        start = self.src_port.scene_pos()
-        end   = self._drag_end if self._drag_end else (
-            self.dst_port.scene_pos() if self.dst_port else start
-        )
-        dx = end.x() - start.x()
-        cp = max(abs(dx) * 0.55, 80)
-        c1 = QPointF(start.x() + cp, start.y())
-        c2 = QPointF(end.x()  - cp, end.y())
-        path = QPainterPath(start)
-        path.cubicTo(c1, c2, end)
-        self.setPath(path)
-        self._apply_style()
-
-    def update_path(self):
-        self._rebuild()
-
-    def set_drag_end(self, pt: QPointF):
-        self._drag_end = pt
-        self._rebuild()
-
-    def finalize(self, dst_port: Port):
-        self.dst_port  = dst_port
-        self._drag_end = None
-        self._rebuild()
-
-    # ── Style ─────────────────────────────────────────────────────────────────
-
-    def _apply_style(self):
-        if self._state is self.STATE_VALID:
-            col = self.COLOR_VALID
-        elif self._state is self.STATE_INVALID:
-            col = self.COLOR_INVALID
-        else:
-            col = self.COLOR_UNKNOWN
-        self.setPen(QPen(col, 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-
-    def set_state(self, state):
-        if self._state != state:
-            self._state = state
-            self._apply_style()
-
-    def doubleClickTarget(self):
-        return self.src_port.parentItem() if self.src_port else None
-
-    # ── Paint (Pfeilspitze) ───────────────────────────────────────────────────
-
-    def paint(self, painter: QPainter, option, widget=None):
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        if self.isSelected():
-            sel_pen = QPen(QColor("#FCD34D"), 5, Qt.SolidLine, Qt.RoundCap)
-            painter.setPen(sel_pen)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPath(self.path())
-
-        super().paint(painter, option, widget)
-
-        # Arrow at endpoint
-        path = self.path()
-        if path.isEmpty():
-            return
-        end    = path.pointAtPercent(1.0)
-        near   = path.pointAtPercent(0.97)
-        angle  = math.atan2(-(end.y() - near.y()), end.x() - near.x())
-        arr_sz = 10
-        a1     = angle + math.radians(150)
-        a2     = angle - math.radians(150)
-        arrow  = QPolygonF([
-            end,
-            QPointF(end.x() + arr_sz * math.cos(a1),
-                    end.y() - arr_sz * math.sin(a1)),
-            QPointF(end.x() + arr_sz * math.cos(a2),
-                    end.y() - arr_sz * math.sin(a2)),
-        ])
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(self.pen().color()))
-        painter.drawPolygon(arrow)
-
-        if self.conditions:
-            # Ein Stern markiert Bedingungen direkt im Editor.
-            mid = path.pointAtPercent(0.5)
-            star_rect = QRectF(mid.x() - 9, mid.y() - 13, 18, 18)
-            painter.setPen(QPen(QColor("#FCD34D"), 1.2))
-            painter.setBrush(QBrush(QColor(15, 23, 42, 230)))
-            painter.drawRoundedRect(star_rect, 4, 4)
-            painter.setPen(QColor("#FCD34D"))
-            painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
-            painter.drawText(star_rect, Qt.AlignCenter, "*")
-
-    def boundingRect(self) -> QRectF:
-        return super().boundingRect().adjusted(-15, -15, 15, 15)
-
-    def mouseDoubleClickEvent(self, event):
-        scene = self.scene()
-        if scene and hasattr(scene, "open_connection_editor"):
-            scene.open_connection_editor(self)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -802,35 +915,48 @@ QPushButton#del_btn:hover { color: #EF4444; }
 QScrollArea { border: none; background: transparent; }
 """
 
-
+def fill_attribute_dropdown(dropdown:QComboBox, selected_attr: AttributeItem, options:list[AttributeItem]={}):
+        seen = set()
+        dropdown.clear()
+        seen.add("")
+        for item in options:
+            name = item.name if isinstance(item, AttributeItem) else str(item)
+            key = item
+            if key and key not in seen:
+                dropdown.addItem(name, key)
+                seen.add(key)
+        selected = selected_attr or None
+        if selected and selected not in seen:
+            name = selected.name if isinstance(selected, AttributeItem) else str(item)
+            dropdown.addItem(name, selected)
+            seen.add(selected)
+        idx = dropdown.findData(selected)
+        if idx < 0:
+            idx = 0
+        dropdown.setCurrentIndex(idx)
+        
 class ConditionRow(QWidget):
     removed = pyqtSignal(object)
 
-    def __init__(self, cond: Condition, attribute_options=None, parent=None):
+    def __init__(self, cond: Condition, attribute_options:list[AttributeItem]={}, parent=None):
         super().__init__(parent)
         self._cond = cond
-        self._attribute_options = list(attribute_options or [])
+        self._attribute_options = attribute_options
         lo = QHBoxLayout(self)
         lo.setContentsMargins(0, 2, 0, 2)
         lo.setSpacing(4)
 
-        self.subject = QComboBox()
-        for key, label in Condition.SUBJECT_LABELS.items():
-            self.subject.addItem(label, key)
-        idx = self.subject.findData(cond.subject)
-        self.subject.setCurrentIndex(max(idx, 0))
-        self.subject.currentIndexChanged.connect(self._refresh_ops)
-
         self.attr = QComboBox()
         self.attr.setFixedWidth(160)
-        self._fill_attribute_dropdown(cond.attribute)
+        fill_attribute_dropdown(self.attr, cond.attribute, self._attribute_options)
 
         self.op = QComboBox()
         self.op.currentIndexChanged.connect(self._on_op)
 
-        self.val = QLineEdit(cond.value)
-        self.val.setPlaceholderText("Eintrag / Anzahl")
-        self.val.setFixedWidth(90)
+        self.val = QDoubleSpinBox()
+        self.val.setRange(-float('inf'), float('inf'))
+        self.val.setValue(cond.value)
+        self.val.setFixedWidth(70)
         self._refresh_ops()
         op_idx = self.op.findData(cond.operator)
         self.op.setCurrentIndex(max(op_idx, 0))
@@ -841,38 +967,29 @@ class ConditionRow(QWidget):
         btn.setFixedSize(22, 22)
         btn.clicked.connect(lambda: self.removed.emit(self))
 
-        lo.addWidget(self.subject)
         lo.addWidget(self.attr)
         lo.addWidget(self.op)
         lo.addWidget(self.val)
         lo.addWidget(btn)
 
     def _ops_for_subject(self):
-        subject = self.subject.currentData()
-        if subject == Condition.SUBJECT_COUNT:
-            return [
-                Condition.OP_EXISTS,
-                Condition.OP_NOT_EXISTS,
-                Condition.OP_EQUALS,
-                Condition.OP_NOT_EQUALS,
-                Condition.OP_GREATER,
-                Condition.OP_GREATER_EQ,
-                Condition.OP_LESS,
-                Condition.OP_LESS_EQ,
-            ]
         return [
-            Condition.OP_EXISTS,
-            Condition.OP_NOT_EXISTS,
-            Condition.OP_EQUALS,
-            Condition.OP_NOT_EQUALS,
-        ]
+            CONDITION_OP.EXISTS,
+            CONDITION_OP.NOT_EXISTS,
+            CONDITION_OP.EQUALS,
+            CONDITION_OP.NOT_EQUALS,
+            CONDITION_OP.GREATER,
+            CONDITION_OP.GREATER_EQ,
+            CONDITION_OP.LESS,
+            CONDITION_OP.LESS_EQ,
+            ]
 
     def _refresh_ops(self, *args):
         current = self.op.currentData()
         self.op.blockSignals(True)
         self.op.clear()
         for op_key in self._ops_for_subject():
-            self.op.addItem(Condition.OP_LABELS.get(op_key, op_key), op_key)
+            self.op.addItem(op_key.value, op_key)
         idx = self.op.findData(current)
         self.op.setCurrentIndex(max(idx, 0))
         self.op.blockSignals(False)
@@ -880,63 +997,45 @@ class ConditionRow(QWidget):
 
     def _on_op(self, idx):
         op_key = self.op.itemData(idx)
-        self.val.setVisible(op_key not in {Condition.OP_EXISTS, Condition.OP_NOT_EXISTS})
+        self.val.setVisible(op_key not in {CONDITION_OP.EXISTS, CONDITION_OP.NOT_EXISTS})
 
-    def _fill_attribute_dropdown(self, selected_attr: str):
-        seen = set()
-        self.attr.clear()
-        self.attr.addItem("(Attribut wählen)", "")
-        seen.add("")
-        for name in self._attribute_options:
-            key = (name or "").strip()
-            if key and key not in seen:
-                self.attr.addItem(key, key)
-                seen.add(key)
-        selected = (selected_attr or "").strip()
-        if selected and selected not in seen:
-            self.attr.addItem(selected, selected)
-            seen.add(selected)
-        idx = self.attr.findData(selected)
-        if idx < 0:
-            idx = 0
-        self.attr.setCurrentIndex(idx)
+    
 
     def get(self) -> Condition:
         return Condition(
-            self.attr.currentData() or "",
-            self.subject.currentData(),
-            self.op.currentData(),
-            self.val.text()
+            self.attr.currentData() or None,
+            self._ops_for_subject()[self.op.currentIndex()],
+            self.val.value()
         )
 
 
 class EffectRow(QWidget):
     removed = pyqtSignal(object)
 
-    def __init__(self, eff: Effect, attribute_options=None, parent=None):
+    def __init__(self, eff: Effect, attribute_options:list[AttributeItem]={}, parent=None):
         super().__init__(parent)
         self._eff = eff
-        self._attribute_options = list(attribute_options or [])
+        self._attribute_options = attribute_options
         lo = QHBoxLayout(self)
         lo.setContentsMargins(0, 2, 0, 2)
         lo.setSpacing(4)
 
         self.act = QComboBox()
-        self._acts = [Effect.ACT_ADD, Effect.ACT_REMOVE, Effect.ACT_SET]
-        for lbl in Effect.ACT_LABELS.values():
-            self.act.addItem(lbl)
+        self._acts = [EFFECT_OP.ADD, EFFECT_OP.SUBTRACT, EFFECT_OP.SET, EFFECT_OP.MULTIPLY, EFFECT_OP.DIVIDE, EFFECT_OP.MOD]
+        for lbl in self._acts:
+            self.act.addItem(lbl.value, lbl)
         idx = self._acts.index(eff.action) if eff.action in self._acts else 0
         self.act.setCurrentIndex(idx)
         self.act.currentIndexChanged.connect(self._on_act)
 
         self.attr = QComboBox()
         self.attr.setFixedWidth(160)
-        self._fill_attribute_dropdown(eff.attribute)
+        fill_attribute_dropdown(self.attr, eff.attribute, self._attribute_options)
 
-        self.val = QLineEdit(eff.value)
-        self.val.setPlaceholderText("Anzahl")
-        self.val.setFixedWidth(90)
-        self.val.setVisible(idx != 1)
+        self.val = QDoubleSpinBox()
+        self.val.setRange(-float('inf'), float('inf'))
+        self.val.setValue(eff.value)
+        self.val.setFixedWidth(70)
 
         btn = QPushButton("✕")
         btn.setObjectName("del_btn")
@@ -951,47 +1050,33 @@ class EffectRow(QWidget):
     def _on_act(self, idx):
         self.val.setVisible(idx != 1)
 
-    def _fill_attribute_dropdown(self, selected_attr: str):
-        seen = set()
-        self.attr.clear()
-        self.attr.addItem("(Attribut wählen)", "")
-        seen.add("")
-        for name in self._attribute_options:
-            key = (name or "").strip()
-            if key and key not in seen:
-                self.attr.addItem(key, key)
-                seen.add(key)
-        selected = (selected_attr or "").strip()
-        if selected and selected not in seen:
-            self.attr.addItem(selected, selected)
-        idx = self.attr.findData(selected)
-        if idx < 0:
-            idx = 0
-        self.attr.setCurrentIndex(idx)
-
     def get(self) -> Effect:
         return Effect(
+            self.attr.currentData() or None,
             self._acts[self.act.currentIndex()],
-            self.attr.currentData() or "",
-            self.val.text()
+            self.val.value()
         )
 
 
-class StationDialog(QDialog):
-    def __init__(self, item: StationItem, attribute_options=None, parent=None):
+class SettingsDialog(QDialog):
+    def __init__(self, item: QGraphicsItem, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Station bearbeiten")
         self.setMinimumWidth(530)
         self.setStyleSheet(DIALOG_STYLE)
+        
+class StationDialog(SettingsDialog):
+    def __init__(self, item: StationItem, attribute_options:list[AttributeItem]=[], parent=None):
+        super().__init__(item, parent)
+        self.setWindowTitle(f"{item.name} bearbeiten")
         self._color = QColor(item.color)
-        self._attribute_options = list(attribute_options or [])
+        self._attribute_options = attribute_options or []
         self._cond_rows: list[ConditionRow] = []
         self._eff_rows:  list[EffectRow]    = []
         self._build(item)
 
     @staticmethod
     def _copy_condition(cond: Condition) -> Condition:
-        return Condition(cond.attribute, cond.subject, cond.operator, cond.value)
+        return Condition(cond.attribute, cond.operator, cond.value)
 
     def _build(self, item: StationItem):
         root = QVBoxLayout(self)
@@ -1000,7 +1085,7 @@ class StationDialog(QDialog):
         # ── Name + Farbe ──
         row = QHBoxLayout()
         row.addWidget(QLabel("Name:"))
-        self.name_edit = QLineEdit(item.station_name)
+        self.name_edit = QLineEdit(item.name)
         row.addWidget(self.name_edit, 1)
         row.addWidget(QLabel("Farbe:"))
         self.col_btn = QPushButton()
@@ -1011,7 +1096,7 @@ class StationDialog(QDialog):
         root.addLayout(row)
 
         # ── Bedingungen ──
-        cond_grp = QGroupBox("Eingangsbedingungen  (Produkt muss erfüllen, bevor es die Station durchläuft)")
+        cond_grp = QGroupBox("Eingangsbedingungen  (Bedingung vor der Station)")
         cg = QVBoxLayout(cond_grp)
         self._cond_scroll, self._cond_inner, self._cond_vbox = self._make_scroll()
         cg.addWidget(self._cond_scroll)
@@ -1019,26 +1104,38 @@ class StationDialog(QDialog):
             self._add_cond(self._copy_condition(c))
         btn_c = QPushButton("＋  Bedingung hinzufügen")
         btn_c.setObjectName("add_btn")
-        btn_c.clicked.connect(lambda: self._add_cond(Condition()))
+        if len(item.attr_port.connections) <= 0:
+            btn_c.setEnabled(False)
+            btn_c.setToolTip("Bedingungen können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
+        else:
+            btn_c.setEnabled(True)
+            btn_c.setToolTip("")
+            btn_c.clicked.connect(lambda: self._add_cond(Condition()))
         cg.addWidget(btn_c)
         root.addWidget(cond_grp)
 
         # ── Effekte ──
-        eff_grp = QGroupBox("Ausgangseffekte  (was passiert mit dem Produkt nach der Station)")
+        eff_grp = QGroupBox("Ausgangseffekte  (Änderungen nach der Station)")
         eg = QVBoxLayout(eff_grp)
         self._eff_scroll, self._eff_inner, self._eff_vbox = self._make_scroll()
         eg.addWidget(self._eff_scroll)
         for e in item.effects:
-            self._add_eff(Effect(e.action, e.attribute, e.value))
+            self._add_eff(Effect(e.attribute, e.action, e.value))
         btn_e = QPushButton("＋  Effekt hinzufügen")
         btn_e.setObjectName("add_btn")
-        btn_e.clicked.connect(lambda: self._add_eff(Effect(Effect.ACT_ADD)))
+        if len(item.attr_port.connections) <= 0:
+            btn_e.setEnabled(False)
+            btn_e.setToolTip("Effekte können erst hinzugefügt werden, wenn eine Verbindung zum Attribut-Port besteht.")
+        else:
+            btn_e.setEnabled(True)
+            btn_e.setToolTip("")
+            btn_e.clicked.connect(lambda: self._add_eff(Effect()))
         eg.addWidget(btn_e)
         root.addWidget(eff_grp)
 
         # ── Buttons ──
         btns = QDialogButtonBox()
-        ok  = btns.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
+        ok = btns.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
         ok.setObjectName("ok_btn")
         btns.addButton("Abbrechen", QDialogButtonBox.RejectRole)
         btns.accepted.connect(self.accept)
@@ -1101,34 +1198,26 @@ class StationDialog(QDialog):
         }
 
 
-class AttributeDialog(QDialog):
+class AttributeDialog(SettingsDialog):
     def __init__(self, item: AttributeItem, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Attribut bearbeiten")
-        self.setMinimumWidth(400)
-        self.setStyleSheet(DIALOG_STYLE)
-        self._color = item.color
-
+        super().__init__(item, parent)
+        self.setWindowTitle(f"{item.name} bearbeiten")
+        self._color = QColor(item.color)
+        self._build(item)
+    
+    def _build(self, item:AttributeItem):
         lo = QVBoxLayout(self)
         row = QHBoxLayout()
         row.addWidget(QLabel("Name:"))
-        self.name_edit = QLineEdit(item.attribute_name)
+        self.name_edit = QLineEdit(item.name)
         row.addWidget(self.name_edit, 1)
-        lo.addLayout(row)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Anzahl:"))
-        self.count_edit = QLineEdit(str(item.attribute_count))
-        self.count_edit.setFixedWidth(100)
-        row2.addWidget(self.count_edit)
-        row2.addWidget(QLabel("Farbe:"))
+        row.addWidget(QLabel("Farbe:"))
         self.col_btn = QPushButton()
         self.col_btn.setFixedSize(36, 26)
         self._refresh_color_btn()
         self.col_btn.clicked.connect(self._pick_color)
-        row2.addWidget(self.col_btn)
-        row2.addStretch(1)
-        lo.addLayout(row2)
+        row.addWidget(self.col_btn)
+        lo.addLayout(row)
 
         btns = QDialogButtonBox()
         ok = btns.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
@@ -1150,36 +1239,29 @@ class AttributeDialog(QDialog):
             self._refresh_color_btn()
 
     def result_data(self):
-        try:
-            count = int(self.count_edit.text().strip() or "1")
-        except ValueError:
-            count = 1
         return {
             "name": self.name_edit.text().strip() or "Attribut",
-            "count": max(0, count),
             "color": QColor(self._color),
         }
 
 
-class ConnectionDialog(QDialog):
-    def __init__(self, conn: ConnectionItem, attribute_options=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Verbindung bearbeiten")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(DIALOG_STYLE)
-        self._attribute_options = list(attribute_options or [])
-        self._rows: list[ConditionRow] = []
-        self._build(conn)
+class ConnectionDialog(SettingsDialog):
+    def __init__(self, item: ConnectionItem, attribute_options:list[AttributeItem]=[], parent=None):
+        super().__init__(item, parent)
+        self.setWindowTitle(f"Verbindung bearbeiten")
+        self._attribute_options = attribute_options or []
+        self._cond_rows: list[ConditionRow] = []
+        self._build(item)
 
     @staticmethod
     def _copy_condition(cond: Condition) -> Condition:
-        return Condition(cond.attribute, cond.subject, cond.operator, cond.value)
+        return Condition(cond.attribute, cond.operator, cond.value)
 
     def _build(self, conn: ConnectionItem):
         root = QVBoxLayout(self)
-        src = conn.src_port.parentItem().station_name if isinstance(conn.src_port.parentItem(), StationItem) else getattr(conn.src_port.parentItem(), "attribute_name", "?")
+        src = conn.src_port.parentItem().name if isinstance(conn.src_port.parentItem(), StationItem) else conn.src_port.parentItem().name
         dst_parent = conn.dst_port.parentItem() if conn.dst_port else None
-        dst = dst_parent.station_name if isinstance(dst_parent, StationItem) else getattr(dst_parent, "attribute_name", "?")
+        dst = dst_parent.name if isinstance(dst_parent, StationItem) else dst_parent.name
 
         info = QLabel(f"Von: {src}    Nach: {dst}")
         info.setWordWrap(True)
@@ -1193,7 +1275,13 @@ class ConnectionDialog(QDialog):
             self._add_cond(self._copy_condition(cond))
         add_btn = QPushButton("＋  Bedingung hinzufügen")
         add_btn.setObjectName("add_btn")
-        add_btn.clicked.connect(lambda: self._add_cond(Condition()))
+        if isinstance(conn.src_port.parentItem(), AttributeItem):
+            add_btn.setEnabled(False)
+            add_btn.setToolTip("Bedingungen können nicht hinzugefügt werden, wenn die Verbindung direkt von einem Attribut ausgeht.")
+        else:
+            add_btn.setEnabled(True)
+            add_btn.setToolTip("")
+            add_btn.clicked.connect(lambda: self._add_cond(Condition()))
         vg.addWidget(add_btn)
         root.addWidget(grp)
 
@@ -1208,16 +1296,16 @@ class ConnectionDialog(QDialog):
     def _add_cond(self, cond: Condition):
         row = ConditionRow(cond, self._attribute_options)
         row.removed.connect(self._rm_cond)
-        self._rows.append(row)
+        self._cond_rows.append(row)
         self.vbox.addWidget(row)
 
     def _rm_cond(self, row: ConditionRow):
-        self._rows.remove(row)
+        self._cond_rows.remove(row)
         self.vbox.removeWidget(row)
         row.deleteLater()
 
     def result_data(self):
-        return [row.get() for row in self._rows]
+        return [row.get() for row in self._cond_rows]
 
 
 class TextDialog(QDialog):
@@ -1247,6 +1335,10 @@ class TextDialog(QDialog):
 #  SZENE
 # ══════════════════════════════════════════════════════════════════════════════
 
+class CONNECTION_KIND(Enum):
+    FLOW = True,
+    ATTRIBUTE = False
+    
 class FlowScene(QGraphicsScene):
     status_message = pyqtSignal(str)
 
@@ -1274,34 +1366,6 @@ class FlowScene(QGraphicsScene):
         return isinstance(item, AttributeItem)
 
     @staticmethod
-    def _state_from_attribute(item: AttributeItem) -> dict:
-        try:
-            count = max(0, int(item.attribute_count))
-        except (TypeError, ValueError):
-            count = 0
-        return {
-            item.attribute_name: {
-                "count": count,
-            }
-        }
-
-    @staticmethod
-    def _merge_states(base: dict, extra: dict) -> dict:
-        merged = {key: (dict(value) if isinstance(value, dict) else {"value": value, "count": 1})
-                  for key, value in base.items()}
-        for key, value in extra.items():
-            if not isinstance(value, dict):
-                value = {"value": value, "count": 1}
-            if key in merged:
-                existing = merged[key]
-                existing["count"] = max(0, int(existing.get("count", 0))) + max(0, int(value.get("count", 0)))
-                if value.get("value") not in (None, ""):
-                    existing["value"] = value.get("value")
-            else:
-                merged[key] = dict(value)
-        return merged
-
-    @staticmethod
     def _apply_effects(state: dict, effects: list[Effect]) -> dict:
         attrs = dict(state)
         for eff in effects:
@@ -1309,81 +1373,36 @@ class FlowScene(QGraphicsScene):
         return attrs
 
     @staticmethod
-    def _conditions_ok(conditions: list[Condition], state: dict) -> bool:
-        return all(cond.check(state) for cond in conditions)
+    def _conditions_ok(conditions: list[Condition], state: dict) -> list[Condition]:
+        return [cond for cond in conditions if not cond.check(state)]
 
-    def _station_items(self):
+    def _station_items(self) -> list[StationItem]:
         return [i for i in self.items() if isinstance(i, StationItem)]
 
-    def _attribute_items(self):
+    def _attribute_items(self) -> list[AttributeItem]:
         return [i for i in self.items() if isinstance(i, AttributeItem)]
 
-    def _all_attribute_names(self) -> list[str]:
-        names = []
-        seen = set()
-        for item in self._attribute_items():
-            name = (item.attribute_name or "").strip()
-            if name and name not in seen:
-                names.append(name)
-                seen.add(name)
-        return names
-
-    def _connected_attribute_names(self, station: StationItem) -> list[str]:
-        names = []
+    def _connected_attributes(self, station: StationItem) -> list[AttributeItem]:
+        attrs = []
         seen = set()
         for conn in station.attr_port.connections:
             if conn.src_port and isinstance(conn.src_port.parentItem(), AttributeItem):
-                name = (conn.src_port.parentItem().attribute_name or "").strip()
-                if name and name not in seen:
-                    names.append(name)
-                    seen.add(name)
-        return names
+                if conn.src_port.parentItem() and conn.src_port.parentItem() not in seen:
+                    attrs.append(conn.src_port.parentItem())
+                    seen.add(conn.src_port.parentItem())
+        return attrs
 
-    def _rename_attribute_references(self, old_name: str, new_name: str) -> dict:
-        old_key = (old_name or "").strip()
-        new_key = (new_name or "").strip()
-        if not old_key or not new_key or old_key == new_key:
-            return {"conditions": 0, "effects": 0, "connections": 0}
-
-        updates = {"conditions": 0, "effects": 0, "connections": 0}
-        for station in self._station_items():
-            changed = False
-            for cond in station.conditions:
-                if (cond.attribute or "").strip() == old_key:
-                    cond.attribute = new_key
-                    changed = True
-                    updates["conditions"] += 1
-            for eff in station.effects:
-                if (eff.attribute or "").strip() == old_key:
-                    eff.attribute = new_key
-                    changed = True
-                    updates["effects"] += 1
-            if changed:
-                station.update()
-                self._refresh_template(station)
-
-        for conn in self._connections:
-            changed = False
-            for cond in conn.conditions:
-                if (cond.attribute or "").strip() == old_key:
-                    cond.attribute = new_key
-                    changed = True
-                    updates["connections"] += 1
-            if changed:
-                conn.update()
-        return updates
-
-    def _connection_kind(self, conn: ConnectionItem):
+    def _connection_kind(self, conn: ConnectionItem) -> CONNECTION_KIND:
         if not conn.src_port or not conn.dst_port:
             return None
         src = conn.src_port.parentItem()
         dst = conn.dst_port.parentItem()
         if isinstance(src, StationItem) and isinstance(dst, StationItem):
-            if conn.src_port.port_type == Port.OUTPUT and conn.dst_port.port_type == Port.INPUT:
-                return "flow"
+            if conn.src_port.port_type == PORT_TYPE.INPUT and conn.dst_port.port_type == PORT_TYPE.OUTPUT:
+                return CONNECTION_KIND.FLOW
         if isinstance(src, AttributeItem) and isinstance(dst, StationItem):
-            if conn.src_port.port_type == Port.ATTR_OUTPUT and conn.dst_port.port_type == Port.ATTR_INPUT:
-                return "attribute"
+            if conn.src_port.port_type == PORT_TYPE.ATTR_OUTPUT and conn.dst_port.port_type == PORT_TYPE.ATTR_INPUT:
+                return CONNECTION_KIND.ATTRIBUTE
         return None
 
     def _can_connect(self, src_port: Port, dst_port: Port) -> bool:
@@ -1396,9 +1415,9 @@ class FlowScene(QGraphicsScene):
         src_item = src_port.parentItem()
         dst_item = dst_port.parentItem()
         if isinstance(src_item, StationItem) and isinstance(dst_item, StationItem):
-            return src_port.port_type == Port.OUTPUT and dst_port.port_type == Port.INPUT
+            return src_port.port_type == PORT_TYPE.OUTPUT and dst_port.port_type == PORT_TYPE.INPUT
         if isinstance(src_item, AttributeItem) and isinstance(dst_item, StationItem):
-            return src_port.port_type == Port.ATTR_OUTPUT and dst_port.port_type == Port.ATTR_INPUT
+            return src_port.port_type == PORT_TYPE.ATTR_OUTPUT and dst_port.port_type == PORT_TYPE.ATTR_INPUT
         return False
 
     def _resolve_drop_target(self, src_port: Port, item:ConnectionItem):
@@ -1422,7 +1441,7 @@ class FlowScene(QGraphicsScene):
                 conn.set_drag_end(event.scenePos())
                 self.addItem(conn)
                 self._wip_conn = conn
-                if item.port_type == Port.ATTR_OUTPUT:
+                if item.port_type == PORT_TYPE.ATTR_OUTPUT:
                     self.status_message.emit("Attributverbindung ziehen → auf den orangefarbenen Attribut-Eingang der Station loslassen.")
                 else:
                     self.status_message.emit("Verbindung ziehen → auf den grünen Eingangs-Port der Ziel-Station loslassen.")
@@ -1500,10 +1519,10 @@ class FlowScene(QGraphicsScene):
 
     def open_station_editor(self, item: StationItem):
         parent = self.views()[0] if self.views() else None
-        dlg    = StationDialog(item, self._connected_attribute_names(item), parent)
+        dlg    = StationDialog(item, self._connected_attributes(item), parent)
         if dlg.exec_() == QDialog.Accepted:
             d = dlg.result_data()
-            item.station_name = d["name"]
+            item.name = d["name"]
             item.color        = d["color"]
             item.conditions   = d["conditions"]
             item.effects      = d["effects"]
@@ -1517,27 +1536,17 @@ class FlowScene(QGraphicsScene):
         dlg    = AttributeDialog(item, parent)
         if dlg.exec_() == QDialog.Accepted:
             d = dlg.result_data()
-            old_name = item.attribute_name
-            item.attribute_name  = d["name"]
-            item.attribute_count = d["count"]
+            old_name = item.name
+            item.name  = d["name"]
             item.color = d["color"]
             item._layout()
             item.update()
-            renamed = self._rename_attribute_references(old_name, item.attribute_name)
             self._refresh_template(item)
             self.validate_all()
-            total = renamed["conditions"] + renamed["effects"] + renamed["connections"]
-            if total > 0:
-                self.status_message.emit(
-                    "Attribut umbenannt: "
-                    f"{renamed['conditions']} Eingangsbedingung(en), "
-                    f"{renamed['effects']} Ausgangseffekt(e), "
-                    f"{renamed['connections']} Pfeilbedingung(en) aktualisiert."
-                )
 
     def open_connection_editor(self, conn: ConnectionItem):
         parent = self.views()[0] if self.views() else None
-        dlg    = ConnectionDialog(conn, self._all_attribute_names(), parent)
+        dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
         if dlg.exec_() == QDialog.Accepted:
             conn.conditions = dlg.result_data()
             conn.update()
@@ -1552,141 +1561,122 @@ class FlowScene(QGraphicsScene):
             item.update()
 
     # ── Validierung ──────────────────────────────────────────────────────────
-    # Strategie: Nur Flow-Kanten bestimmen die Reihenfolge. Attribut-Kanten
-    # liefern zusätzliche Zustände, die an der Station zusammengeführt werden.
-    # Eine Verbindung wird nur dann grün, wenn alle Bedingungen an der
-    # Verbindung, am Quellknoten und am Zielknoten für alle möglichen Zustände
-    # erfüllt sind.
+    # Strategie: Tree Search von Root-Stationen (keine Eingabe-Verbindungen) zu
+    # Leaf-Stationen (keine Ausgabe-Verbindungen). Bedingungen auf Pfeilen und
+    # Stationen werden während der Traversierung überprüft. Effekte propagieren
+    # den Zustand an Nachfolger-Stationen.
 
     def validate_all(self):
         stations = self._station_items()
         if not stations:
             return
 
+        # Alle Verbindungen zurücksetzen
         for conn in self._connections:
             conn._invalid_reasons = []
 
-        flow_preds = {s: [] for s in stations}
-        flow_succs = {s: [] for s in stations}
-        attr_inputs = {s: [] for s in stations}
+        # Baue den Flow-Graph auf
+        flow_preds = {s: [] for s in stations}  # Eingehende Flow-Kanten
+        flow_succs = {s: [] for s in stations}  # Ausgehende Flow-Kanten
+        attr_inputs = {s: [] for s in stations}  # Eingehende Attribut-Kanten
 
         for conn in self._connections:
             kind = self._connection_kind(conn)
-            if kind == "flow":
+            if kind is None:
+                continue
+            if kind.value:  # FLOW connection
                 src = conn.src_port.parentItem()
                 dst = conn.dst_port.parentItem()
                 flow_preds[dst].append((conn, src))
                 flow_succs[src].append((conn, dst))
-            elif kind == "attribute":
+            else:  # ATTRIBUTE connection
                 dst = conn.dst_port.parentItem()
                 attr_inputs[dst].append(conn)
 
-        in_deg = {s: len(flow_preds[s]) for s in stations}
-        queue  = deque(s for s in stations if in_deg[s] == 0)
-        order  = []
-        while queue:
-            node = queue.popleft()
-            order.append(node)
-            for _, succ in flow_succs[node]:
-                in_deg[succ] -= 1
-                if in_deg[succ] == 0:
-                    queue.append(succ)
-        for s in stations:
-            if s not in order:
-                order.append(s)
+        # Finde Root-Stationen (keine eingehenden Flow-Kanten)
+        root_stations = [s for s in stations if len(flow_preds[s]) == 0]
+        
+        # Durchsuche Graph mittels DFS von jeder Root-Station
+        visited_stations = set()
+        validated_connections = set()
 
-        incoming: dict[StationItem, list[dict]] = {s: [] for s in stations}
-        outputs: dict[StationItem, list[dict]] = {s: [] for s in stations}
-        source_ok: dict[StationItem, bool] = {s: True for s in stations}
-        attr_ok: dict[StationItem, bool] = {s: True for s in stations}
+        def dfs_validate(station: StationItem, incoming_state: dict):
+            """DFS Traversierung mit Zustandspropagation und Validierung."""
+            if station in visited_stations:
+                return
+            visited_stations.add(station)
 
-        for s in stations:
-            if in_deg.get(s, 0) == 0:
-                incoming[s] = [{}]
+            # Validiere eingehende Flow-Verbindungen
+            for conn, src_station in flow_preds[station]:
+                if conn in validated_connections:
+                    continue
+                validated_connections.add(conn)
 
-        for s in order:
-            states_in = incoming[s] or [{}]
-            attached_attrs = []
-            attr_conn_ok = True
-            for conn in attr_inputs[s]:
+                # Prüfe Bedingungen auf der Verbindung und der Zielstation
+                conn_conds_ok = self._conditions_ok(conn.conditions, incoming_state)
+                station_conds_ok = self._conditions_ok(station.conditions, incoming_state)
+
+                if len(conn_conds_ok)<=0 and len(station_conds_ok)<=0:
+                    conn.set_state(CONNECTION_STATE.VALID)
+                elif not len(conn_conds_ok)<=0 and len(station_conds_ok)<=0:
+                    conn.set_state(CONNECTION_STATE.CONDITIONAL_VALID)
+                    for cond in conn_conds_ok:
+                        conn._invalid_reasons.append(
+                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)}"
+                            )
+                elif len(conn_conds_ok)<=0 and not len(station_conds_ok)<=0:
+                    conn.set_state(CONNECTION_STATE.CONDITIONAL_INVALID)
+                    for cond in station_conds_ok:
+                        conn._invalid_reasons.append(
+                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)}"
+                            )
+                elif not len(conn_conds_ok)<=0 and not len(station_conds_ok)<=0:
+                    conn.set_state(CONNECTION_STATE.INVALID)
+                    for cond in conn_conds_ok:
+                        conn._invalid_reasons.append(
+                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)}"
+                            )
+                    for cond in station_conds_ok:
+                        conn._invalid_reasons.append(
+                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)}"
+                            )
+
+            # Validiere eingehende Attribut-Verbindungen
+            for conn in attr_inputs[station]:
+                if conn in validated_connections:
+                    continue
+                validated_connections.add(conn)
+
                 src_item = conn.src_port.parentItem()
                 if not isinstance(src_item, AttributeItem):
-                    attr_conn_ok = False
-                    conn.set_state(ConnectionItem.STATE_INVALID)
+                    conn._invalid_reasons = ["Attributverbindung hat keine gültige Attributquelle."]
+                    conn.set_state(CONNECTION_STATE.INVALID)
                     continue
-                attr_state = self._state_from_attribute(src_item)
-                conn_ok = self._conditions_ok(conn.conditions, attr_state)
-                conn.set_state(ConnectionItem.STATE_VALID if conn_ok else ConnectionItem.STATE_INVALID)
-                attr_conn_ok = attr_conn_ok and conn_ok
-                if conn_ok:
-                    attached_attrs.append(attr_state)
 
-            combined_in = []
-            for state in states_in:
-                merged = dict(state)
-                for attr_state in attached_attrs:
-                    merged = self._merge_states(merged, attr_state)
-                combined_in.append(merged)
+                conn.set_state(CONNECTION_STATE.VALID)
 
-            states_out = [self._apply_effects(state, s.effects) for state in combined_in]
-            incoming_states = states_out or [{}]
-            outputs[s] = incoming_states
-            source_ok[s] = self._conditions_ok(s.conditions, {}) if not combined_in else all(
-                self._conditions_ok(s.conditions, state) for state in combined_in
-            )
-            attr_ok[s] = attr_conn_ok
+            # Wende Effekte an, um Ausgabe-State zu erhalten
+            output_state = self._apply_effects(incoming_state, station.effects)
 
-            for _, succ in flow_succs[s]:
-                incoming[succ].extend(incoming_states)
+            # Rekursiv validiere Nachfolger-Stationen
+            for conn, succ_station in flow_succs[station]:
+                dfs_validate(succ_station, output_state)
 
+        # Starte DFS von jeder Root-Station mit leerem State
+        for root in root_stations:
+            dfs_validate(root, {})
+
+        # Behandle unvisitierte Verbindungen (isolierte oder fehlerhafte Verbindungen)
         for conn in self._connections:
-            if not conn.src_port or not conn.dst_port:
-                conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
-                conn.set_state(ConnectionItem.STATE_UNKNOWN)
-                continue
-            kind = self._connection_kind(conn)
-            src_item = conn.src_port.parentItem()
-            dst_item = conn.dst_port.parentItem()
-
-            if kind == "attribute" and isinstance(src_item, AttributeItem) and isinstance(dst_item, StationItem):
-                source_state = self._state_from_attribute(src_item)
-                ok = self._conditions_ok(conn.conditions, source_state)
-                if not ok:
-                    conn._invalid_reasons = [
-                        "Mindestens eine Bedingung am Attribut-Pfeil ist für den aktuellen Attributzustand nicht erfüllt."
-                    ]
-                conn.set_state(ConnectionItem.STATE_VALID if ok else ConnectionItem.STATE_INVALID)
-                continue
-
-            if kind != "flow" or not isinstance(src_item, StationItem) or not isinstance(dst_item, StationItem):
-                conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen (nur Station→Station oder Attribut→Station)."]
-                conn.set_state(ConnectionItem.STATE_UNKNOWN)
-                continue
-
-            states_after_src = outputs.get(src_item) or [{}]
-            failed_conn_states = sum(1 for state in states_after_src if not self._conditions_ok(conn.conditions, state))
-            failed_dst_states = sum(1 for state in states_after_src if not self._conditions_ok(dst_item.conditions, state))
-            conn_ok = failed_conn_states == 0
-            dst_ok = failed_dst_states == 0
-            src_state_ok = source_ok.get(src_item, True)
-            src_attr_ok = attr_ok.get(src_item, True)
-            all_ok = conn_ok and dst_ok and src_state_ok and src_attr_ok
-            if not all_ok:
-                reasons = []
-                if not src_state_ok:
-                    reasons.append("Die Eingangsbedingungen der Quell-Station sind bereits vor diesem Pfeil nicht erfüllbar.")
-                if not src_attr_ok:
-                    reasons.append("Mindestens eine Attribut-Zuordnung an der Quell-Station ist ungültig.")
-                if failed_conn_states > 0:
-                    reasons.append(
-                        f"{failed_conn_states} möglicher Zustand/Zustände verletzt/ verletzen die Bedingungen direkt auf diesem Pfeil."
-                    )
-                if failed_dst_states > 0:
-                    reasons.append(
-                        f"{failed_dst_states} möglicher Zustand/Zustände erfüllt/ erfüllen die Eingangsbedingungen der Ziel-Station nicht."
-                    )
-                conn._invalid_reasons = reasons
-            conn.set_state(ConnectionItem.STATE_VALID if all_ok else ConnectionItem.STATE_INVALID)
+            if conn not in validated_connections:
+                if not conn.src_port or not conn.dst_port:
+                    conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
+                    conn.set_state(CONNECTION_STATE.UNKNOWN)
+                else:
+                    kind = self._connection_kind(conn)
+                    if kind is None:
+                        conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen."]
+                        conn.set_state(CONNECTION_STATE.UNKNOWN)
 
         self.status_message.emit(
             f"{len(self._connections)} Verbindung(en) validiert  –  "
@@ -1975,7 +1965,7 @@ class Palette(QWidget):
     def register_item(self, item):
         if isinstance(item, StationItem):
             template_id = item.template_id
-            label = item.station_name
+            label = item.name
             self._station_templates[template_id] = item.clone()
             existing = self._station_items.get(template_id)
             if existing is None:
@@ -1989,7 +1979,7 @@ class Palette(QWidget):
                 existing.setIcon(self._make_icon(QColor(item.color), "Station"))
         elif isinstance(item, AttributeItem):
             template_id = item.template_id
-            label = f"{item.attribute_name} · {item.attribute_count}"
+            label = item.name
             self._attribute_templates[template_id] = item.clone()
             existing = self._attribute_items.get(template_id)
             if existing is None:
@@ -2253,15 +2243,15 @@ class MainWindow(QMainWindow):
     def _choose_file(self, save: bool, title: str, default_name: str, name_filter: str):
         start_dir = os.path.expanduser("~")
         start_path = os.path.join(start_dir, default_name) if default_name else start_dir
+        print(start_path)
         options = QFileDialog.Options()
-
+        print(options)
         if save:
             path, _ = QFileDialog.getSaveFileName(
                 self,
                 title,
                 start_path,
                 name_filter,
-                options=options,
             )
         else:
             path, _ = QFileDialog.getOpenFileName(
@@ -2269,14 +2259,14 @@ class MainWindow(QMainWindow):
                 title,
                 start_path,
                 name_filter,
-                options=options,
             )
-        return path or ""
+        print(path)    
+        return path or default_name
 
     def _on_scene_selection_changed(self):
         selected = self.scene.selectedItems()
         invalid_conn = next(
-            (item for item in selected if isinstance(item, ConnectionItem) and item._state is ConnectionItem.STATE_INVALID),
+            (item for item in selected if isinstance(item, ConnectionItem) and item._state is CONNECTION_STATE.INVALID),
             None,
         )
         if invalid_conn is not None:
@@ -2286,51 +2276,23 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _serialize_condition(cond: Condition) -> dict:
-        return {
-            "attribute": cond.attribute,
-            "subject": cond.subject,
-            "operator": cond.operator,
-            "value": cond.value,
-        }
+        return StationItem._serialize_condition(cond)
 
     @staticmethod
     def _deserialize_condition(data: dict) -> Condition:
-        return Condition(
-            data.get("attribute", ""),
-            data.get("subject") or Condition.SUBJECT_VALUE,
-            data.get("operator") or Condition.OP_EXISTS,
-            data.get("value", ""),
-        )
+        return StationItem._deserialize_condition(data)
 
     @staticmethod
     def _serialize_effect(eff: Effect) -> dict:
-        return {
-            "action": eff.action,
-            "attribute": eff.attribute,
-            "value": eff.value,
-        }
+        return StationItem._serialize_effect(eff)
 
     @staticmethod
     def _deserialize_effect(data: dict) -> Effect:
-        return Effect(
-            data.get("action") or Effect.ACT_ADD,
-            data.get("attribute", ""),
-            data.get("value", ""),
-        )
+        return StationItem._deserialize_effect(data)
 
     @staticmethod
     def _port_by_type(item, port_type: str):
-        if isinstance(item, StationItem):
-            if port_type == Port.INPUT:
-                return item.in_port
-            if port_type == Port.OUTPUT:
-                return item.out_port
-            if port_type == Port.ATTR_INPUT:
-                return item.attr_port
-        if isinstance(item, AttributeItem):
-            if port_type == Port.ATTR_OUTPUT:
-                return item.out_port
-        return None
+        return ConnectionItem._resolve_port(item, port_type)
 
     def _export_json(self):
         path = self._choose_file(
@@ -2343,13 +2305,7 @@ class MainWindow(QMainWindow):
             return
         if not path.lower().endswith(".json"):
             path += ".json"
-
-        def _safe_int(value, default=0):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return default
-
+            
         try:
             stations = [i for i in self.scene.items() if isinstance(i, StationItem)]
             attributes = [i for i in self.scene.items() if isinstance(i, AttributeItem)]
@@ -2357,31 +2313,8 @@ class MainWindow(QMainWindow):
 
             data = {
                 "version": 1,
-                "stations": [
-                    {
-                        "node_id": s.node_id,
-                        "template_id": s.template_id,
-                        "name": s.station_name,
-                        "color": QColor(s.color).name(),
-                        "x": float(s.pos().x()),
-                        "y": float(s.pos().y()),
-                        "conditions": [self._serialize_condition(c) for c in s.conditions],
-                        "effects": [self._serialize_effect(e) for e in s.effects],
-                    }
-                    for s in stations
-                ],
-                "attributes": [
-                    {
-                        "node_id": a.node_id,
-                        "template_id": a.template_id,
-                        "name": a.attribute_name,
-                        "count": max(0, _safe_int(getattr(a, "attribute_count", 0), 0)),
-                        "color": QColor(a.color).name(),
-                        "x": float(a.pos().x()),
-                        "y": float(a.pos().y()),
-                    }
-                    for a in attributes
-                ],
+                "attributes": [a.to_json() for a in attributes],
+                "stations": [s.to_json() for s in stations],
                 "textblocks": [
                     {
                         "node_id": t.node_id,
@@ -2391,17 +2324,7 @@ class MainWindow(QMainWindow):
                     }
                     for t in textblocks
                 ],
-                "connections": [
-                    {
-                        "src_node_id": getattr(c.src_port.parentItem(), "node_id", None),
-                        "src_port_type": c.src_port.port_type if c.src_port else None,
-                        "dst_node_id": getattr(c.dst_port.parentItem(), "node_id", None),
-                        "dst_port_type": c.dst_port.port_type if c.dst_port else None,
-                        "conditions": [self._serialize_condition(cond) for cond in c.conditions],
-                    }
-                    for c in self.scene._connections
-                    if c.src_port and c.dst_port
-                ],
+                "connections": [c.to_json() for c in self.scene._connections if c.src_port and c.dst_port],
             }
 
             with open(path, "w", encoding="utf-8") as f:
@@ -2432,29 +2355,14 @@ class MainWindow(QMainWindow):
         self.palette.reset_templates()
 
         node_map = {}
-
-        for s in data.get("stations", []):
-            item = StationItem(s.get("name", "Station"), QColor(s.get("color", "#2563EB")))
-            item.node_id = s.get("node_id") or item.node_id
-            item.template_id = s.get("template_id") or item.template_id
-            item.conditions = [self._deserialize_condition(c) for c in s.get("conditions", [])]
-            item.effects = [self._deserialize_effect(e) for e in s.get("effects", [])]
-            item._layout()
-            item.setPos(float(s.get("x", 0.0)), float(s.get("y", 0.0)))
+        for a in data.get("attributes", []):
+            item = AttributeItem.from_json(a)
             self.scene.addItem(item)
             self.scene._register_template(item)
             node_map[item.node_id] = item
-
-        for a in data.get("attributes", []):
-            item = AttributeItem(
-                a.get("name", "Attribut"),
-                int(a.get("count", 1) or 1),
-                QColor(a.get("color", "#F59E0B")),
-            )
-            item.node_id = a.get("node_id") or item.node_id
-            item.template_id = a.get("template_id") or item.template_id
-            item._layout()
-            item.setPos(float(a.get("x", 0.0)), float(a.get("y", 0.0)))
+            
+        for s in data.get("stations", []):
+            item = StationItem.from_json(s, node_map)
             self.scene.addItem(item)
             self.scene._register_template(item)
             node_map[item.node_id] = item
@@ -2468,19 +2376,9 @@ class MainWindow(QMainWindow):
             node_map[item.node_id] = item
 
         for c in data.get("connections", []):
-            src_item = node_map.get(c.get("src_node_id"))
-            dst_item = node_map.get(c.get("dst_node_id"))
-            if src_item is None or dst_item is None:
+            conn = ConnectionItem.from_json(c, node_map)
+            if conn is None:
                 continue
-            src_port = self._port_by_type(src_item, c.get("src_port_type"))
-            dst_port = self._port_by_type(dst_item, c.get("dst_port_type"))
-            if src_port is None or dst_port is None:
-                continue
-            conn = ConnectionItem(src_port)
-            conn.conditions = [self._deserialize_condition(cond) for cond in c.get("conditions", [])]
-            conn.finalize(dst_port)
-            src_port.connections.append(conn)
-            dst_port.connections.append(conn)
             self.scene._connections.append(conn)
             self.scene.addItem(conn)
 
@@ -2499,48 +2397,43 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
 
-        printer = QPrinter(QPrinter.HighResolution)
+        printer = QPrinter()
+        printer.setResolution(125)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(path)
         printer.setPageSize(QPrinter.A4)
         printer.setOrientation(QPrinter.Landscape)
-
+        printer.setFullPage(True)
         painter = QPainter(printer)
         if not painter.isActive():
             return
-
         try:
             self._paint_pdf_editor_page(painter, printer)
-            printer.newPage()
-            self._paint_pdf_flow_page(painter, printer)
-            printer.newPage()
-            self._paint_pdf_clean_flow_page(painter, printer)
+            #printer.newPage()
+            #self._paint_pdf_flow_page(painter, printer)
+            #printer.newPage()
+            #self._paint_pdf_clean_flow_page(painter, printer)
         finally:
             painter.end()
         self.statusBar().showMessage(f"PDF exportiert: {path}")
 
     def _paint_pdf_editor_page(self, painter: QPainter, printer: QPrinter):
         page_rect = printer.pageRect(QPrinter.DevicePixel)
-        painter.fillRect(page_rect, QColor("#0F172A"))
-        painter.setPen(QColor("#E2E8F0"))
-        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        painter.drawText(QRectF(40, 20, page_rect.width() - 80, 30), Qt.AlignLeft, "Editoransicht")
-        source = self.scene.itemsBoundingRect().adjusted(-80, -80, 80, 80)
+        source = self.scene.itemsBoundingRect().adjusted(-100, -100, 100, 10)
         if source.isEmpty():
             source = self.scene.sceneRect().adjusted(0, 0, -1, -1)
         target = QRectF(30, 60, page_rect.width() - 60, page_rect.height() - 90)
+        painter.translate(printer.pageRect().center())
+        painter.scale(1.1, 1.1)
+        painter.translate(-target.width()/2-15, -target.height()/2-15)
         self.scene.render(painter, target, source)
 
     def _paint_pdf_flow_page(self, painter: QPainter, printer: QPrinter):
         page_rect = printer.pageRect(QPrinter.DevicePixel)
-        painter.fillRect(page_rect, QColor("#0F172A"))
-        painter.setPen(QColor("#E2E8F0"))
-        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        painter.drawText(QRectF(40, 20, page_rect.width() - 80, 30), Qt.AlignLeft, "Ablaufdiagramm")
 
         stations = [item for item in self.scene.items() if isinstance(item, StationItem)]
         if not stations:
-            painter.setFont(QFont("Segoe UI", 10))
+            painter.setFont(QFont("Segoe UI", 4))
             painter.drawText(QRectF(40, 70, page_rect.width() - 80, 40), Qt.AlignLeft, "Keine Stationen vorhanden.")
             return
 
@@ -2640,17 +2533,13 @@ class MainWindow(QMainWindow):
             painter.drawPath(body)
             painter.setPen(QColor(255, 255, 255, 242))
             painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            painter.drawText(QRectF(rect.left() + 8, rect.top() + 8, rect.width() - 16, 18), Qt.AlignLeft, station.station_name)
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 8, rect.width() - 16, 18), Qt.AlignLeft, station.name)
             painter.setFont(QFont("Consolas", 8))
             painter.drawText(QRectF(rect.left() + 8, rect.top() + 28, rect.width() - 16, 14), Qt.AlignLeft, f"Bedingungen: {len(station.conditions)}")
             painter.drawText(QRectF(rect.left() + 8, rect.top() + 42, rect.width() - 16, 14), Qt.AlignLeft, f"Effekte: {len(station.effects)}")
 
     def _paint_pdf_clean_flow_page(self, painter: QPainter, printer: QPrinter):
         page_rect = printer.pageRect(QPrinter.DevicePixel)
-        painter.fillRect(page_rect, QColor("#FFFFFF"))
-        painter.setPen(QColor("#111827"))
-        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        painter.drawText(QRectF(36, 18, page_rect.width() - 72, 28), Qt.AlignLeft, "Aufgeraeumtes Ablaufdiagramm")
 
         stations = [item for item in self.scene.items() if isinstance(item, StationItem)]
         if not stations:
@@ -2752,7 +2641,7 @@ class MainWindow(QMainWindow):
             painter.drawRoundedRect(rect, 8, 8)
             painter.setPen(QColor("#111827"))
             painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            painter.drawText(QRectF(rect.left() + 8, rect.top() + 7, rect.width() - 16, 18), Qt.AlignLeft, node.station_name)
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 7, rect.width() - 16, 18), Qt.AlignLeft, node.name)
             painter.setFont(QFont("Segoe UI", 7))
             painter.drawText(
                 QRectF(rect.left() + 8, rect.top() + 26, rect.width() - 16, 16),
