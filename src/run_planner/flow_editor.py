@@ -14,6 +14,7 @@ import math
 import uuid
 import json
 import os
+import numpy as np
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 os.environ["QT_SCALE_FACTOR"] = "1"
@@ -112,6 +113,36 @@ class Port(QGraphicsEllipseItem):
     def scene_pos(self) -> QPointF:
         return self.mapToScene(QPointF(0, 0))
 
+    def side(self) -> str:
+        parent = self.parentItem()
+        if parent is None:
+            return "right"
+
+        width = getattr(parent, "_w", parent.boundingRect().width())
+        height = getattr(parent, "_h", parent.boundingRect().height())
+        p = self.pos()
+
+        distances = {
+            "left": abs(p.x() - 0.0),
+            "right": abs(p.x() - width),
+            "top": abs(p.y() - 0.0),
+            "bottom": abs(p.y() - height),
+        }
+        return min(distances, key=distances.get)
+
+    def connection_tangent(self, as_source: bool) -> QPointF:
+        side = self.side()
+        outward = {
+            "left": QPointF(-1.0, 0.0),
+            "right": QPointF(1.0, 0.0),
+            "top": QPointF(0.0, -1.0),
+            "bottom": QPointF(0.0, 1.0),
+        }.get(side, QPointF(1.0, 0.0))
+
+        if as_source:
+            return outward
+        return QPointF(-outward.x(), -outward.y())
+
 class ObjectItem(QGraphicsItem):
     def __init__(self, name: str = "Object", color: QColor = None, w: int = 200, h: int = 72):
         super().__init__()
@@ -132,6 +163,71 @@ class ObjectItem(QGraphicsItem):
         
         self._w = w
         self._h = h
+
+    @staticmethod
+    def _port_pos_for_side(side: str, width: float, height: float) -> QPointF:
+        center_x = width / 2
+        center_y = height / 2
+        if side == "left":
+            return QPointF(0, center_y)
+        if side == "right":
+            return QPointF(width, center_y)
+        if side == "top":
+            return QPointF(center_x, 0)
+        if side == "bottom":
+            return QPointF(center_x, height)
+        return QPointF(0, center_y)
+
+    @staticmethod
+    def _port_pos_for_side_index(side: str, width: float, height: float, index: int, total: int) -> QPointF:
+        if total <= 1:
+            return ObjectItem._port_pos_for_side(side, width, height)
+
+        spacing = 16
+        offset = (index - (total - 1) / 2) * spacing
+        center_x = width / 2
+        center_y = height / 2
+
+        if side == "left":
+            return QPointF(0, center_y + offset)
+        if side == "right":
+            return QPointF(width, center_y + offset)
+        if side == "top":
+            return QPointF(center_x + offset, 0)
+        if side == "bottom":
+            return QPointF(center_x + offset, height)
+        return QPointF(0, center_y + offset)
+
+    @staticmethod
+    def _dominant_side(origin: QPointF, points: list[QPointF], default_side: str) -> str:
+        if not points:
+            return default_side
+        dx = sum(point.x() - origin.x() for point in points) / len(points)
+        dy = sum(point.y() - origin.y() for point in points) / len(points)
+        if abs(dx) >= abs(dy):
+            return "right" if dx >= 0 else "left"
+        return "bottom" if dy >= 0 else "top"
+
+    def _side_for_connections(self, connections, default_side: str, source_side: bool) -> str:
+        points = []
+        for conn in connections:
+            if source_side:
+                other = conn.src_port.parentItem() if conn.src_port else None
+            else:
+                other = conn.dst_port.parentItem() if conn.dst_port else None
+            if other is None or other is self:
+                continue
+            points.append(other.sceneBoundingRect().center())
+        return self._dominant_side(self.sceneBoundingRect().center(), points, default_side)
+
+    def _layout_ports(self, port_specs: list[tuple[Port, str]]):
+        grouped: dict[str, list[Port]] = {"left": [], "right": [], "top": [], "bottom": []}
+        for port, side in port_specs:
+            grouped.setdefault(side, []).append(port)
+
+        for side, ports in grouped.items():
+            for index, port in enumerate(ports):
+                port.setPos(self._port_pos_for_side_index(side, self._w, self._h, index, len(ports)))
         
 # ══════════════════════════════════════════════════════════════════════════════
 #  STATIONSITEM
@@ -156,10 +252,11 @@ class StationItem(ObjectItem):
         rows = len(self.conditions) + len(self.effects)
         extra = max(0, rows - 1) * LINE_H
         self._h = STATION_H_MIN + extra
-        half_h = self._h / 2
-        self.attr_port.setPos(0, HEADER_H / 2)
-        self.in_port.setPos(0, half_h)
-        self.out_port.setPos(self._w, half_h)
+        self._layout_ports([
+            (self.attr_port, self._side_for_connections(self.attr_port.connections, "top", True)),
+            (self.in_port, self._side_for_connections(self.in_port.connections, "left", True)),
+            (self.out_port, self._side_for_connections(self.out_port.connections, "right", False)),
+        ])
         self.prepareGeometryChange()
 
     def type(self):
@@ -279,7 +376,7 @@ class StationItem(ObjectItem):
     @staticmethod
     def _serialize_condition(cond: "Condition") -> dict:
         return {
-            "attribute": cond.attribute.node_id,
+            "attribute": getattr(cond.attribute, "node_id", None),
             "operator": cond.operator.value if isinstance(cond.operator, CONDITION_OP) else str(cond.operator),
             "value": cond.value,
         }
@@ -304,7 +401,7 @@ class StationItem(ObjectItem):
     @staticmethod
     def _serialize_effect(eff: "Effect") -> dict:
         return {
-            "attribute": eff.attribute.node_id,
+            "attribute": getattr(eff.attribute, "node_id", None),
             "action": eff.action.value if isinstance(eff.action, EFFECT_OP) else str(eff.action),
             "value": eff.value,
         }
@@ -342,8 +439,8 @@ class StationItem(ObjectItem):
         item = cls(data.get("name", "Station"), QColor(data.get("color", "#2563EB")))
         item.node_id = data.get("node_id") or item.node_id
         item.template_id = data.get("template_id") or item.template_id
-        item.conditions = [cls._deserialize_condition(c, node_map) for c in data.get("conditions", [])]
-        item.effects = [cls._deserialize_effect(e, node_map) for e in data.get("effects", [])]
+        item.conditions = [c for c in (cls._deserialize_condition(c, node_map) for c in data.get("conditions", [])) if c is not None]
+        item.effects = [e for e in (cls._deserialize_effect(e, node_map) for e in data.get("effects", [])) if e is not None]
         item._layout()
         item.setPos(float(data.get("x", 0.0)), float(data.get("y", 0.0)))
         return item
@@ -366,7 +463,9 @@ class AttributeItem(ObjectItem):
         return item
     
     def _layout(self):
-        self.out_port.setPos(self._w, self._h / 2)
+        self._layout_ports([
+            (self.out_port, self._side_for_connections(self.out_port.connections, "right", False)),
+        ])
         self.prepareGeometryChange()
 
     def type(self):
@@ -451,11 +550,11 @@ class AttributeItem(ObjectItem):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CONNECTION_STATE(int, Enum):
-    UNKNOWN = 0
-    VALID   = 1
-    INVALID = 2
-    CONDITIONAL_VALID = 3
-    CONDITIONAL_INVALID = 4
+    VALID   = 0
+    CONDITIONAL_VALID = 1
+    CONDITIONAL_INVALID = 2
+    INVALID = 3
+    UNKNOWN = 5
     
 class CONNECTION_COLOR(Enum):
     UNKNOWN = QColor("#94A3B8")
@@ -488,10 +587,25 @@ class ConnectionItem(QGraphicsPathItem):
         end   = self._drag_end if self._drag_end else (
             self.dst_port.scene_pos() if self.dst_port else start
         )
+
         dx = end.x() - start.x()
-        cp = max(abs(dx) * 0.55, 80)
-        c1 = QPointF(start.x() + cp, start.y())
-        c2 = QPointF(end.x()  - cp, end.y())
+        dy = end.y() - start.y()
+        cp = max(60.0, min(220.0, math.hypot(dx, dy) * 0.45))
+
+        start_tangent = self.src_port.connection_tangent(as_source=True)
+        if self.dst_port:
+            end_tangent = self.dst_port.connection_tangent(as_source=False)
+        else:
+            end_tangent = QPointF(1.0 if dx >= 0 else -1.0, 0.0)
+
+        c1 = QPointF(
+            start.x() + start_tangent.x() * cp,
+            start.y() + start_tangent.y() * cp,
+        )
+        c2 = QPointF(
+            end.x() - end_tangent.x() * cp,
+            end.y() - end_tangent.y() * cp,
+        )
         path = QPainterPath(start)
         path.cubicTo(c1, c2, end)
         self.setPath(path)
@@ -608,9 +722,9 @@ class ConnectionItem(QGraphicsPathItem):
 
     def to_json(self) -> dict:
         return {
-            "src_node_id": self.src_port.parentItem().node_id if self.src_port else None,
+            "src_node_id": getattr(self.src_port.parentItem(), "node_id", None) if self.src_port else None,
             "src_port_type": self.src_port.port_type.value if self.src_port else None,
-            "dst_node_id": self.dst_port.parentItem().node_id if self.dst_port else None,
+            "dst_node_id": getattr(self.dst_port.parentItem(), "node_id", None) if self.dst_port else None,
             "dst_port_type": self.dst_port.port_type.value if self.dst_port else None,
             "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
         }
@@ -628,10 +742,15 @@ class ConnectionItem(QGraphicsPathItem):
             return None
 
         conn = cls(src_port)
-        conn.conditions = [StationItem._deserialize_condition(cond, node_map) for cond in data.get("conditions", [])]
+        conn.conditions = [cond for cond in (StationItem._deserialize_condition(cond, node_map) for cond in data.get("conditions", [])) if cond is not None]
         conn.finalize(dst_port)
         src_port.connections.append(conn)
         dst_port.connections.append(conn)
+        if hasattr(src_item, "_layout"):
+            src_item._layout()
+        if hasattr(dst_item, "_layout"):
+            dst_item._layout()
+        conn.update_path()
         return conn
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -741,7 +860,6 @@ class Effect:
                     attrs[self.attribute] = attrs[self.attribute] % self.value
             case EFFECT_OP.SET:
                 attrs[self.attribute] = self.value
-        attrs.pop(self.attribute, None)
         return attrs
 
     def __str__(self):
@@ -937,6 +1055,7 @@ def fill_attribute_dropdown(dropdown:QComboBox, selected_attr: AttributeItem, op
         
 class ConditionRow(QWidget):
     removed = pyqtSignal(object)
+    changed = pyqtSignal()
 
     def __init__(self, cond: Condition, attribute_options:list[AttributeItem]={}, parent=None):
         super().__init__(parent)
@@ -949,14 +1068,17 @@ class ConditionRow(QWidget):
         self.attr = QComboBox()
         self.attr.setFixedWidth(160)
         fill_attribute_dropdown(self.attr, cond.attribute, self._attribute_options)
+        self.attr.currentIndexChanged.connect(lambda *_: self.changed.emit())
 
         self.op = QComboBox()
         self.op.currentIndexChanged.connect(self._on_op)
+        self.op.currentIndexChanged.connect(lambda *_: self.changed.emit())
 
         self.val = QDoubleSpinBox()
         self.val.setRange(-float('inf'), float('inf'))
         self.val.setValue(cond.value)
         self.val.setFixedWidth(70)
+        self.val.valueChanged.connect(lambda *_: self.changed.emit())
         self._refresh_ops()
         op_idx = self.op.findData(cond.operator)
         self.op.setCurrentIndex(max(op_idx, 0))
@@ -1246,6 +1368,8 @@ class AttributeDialog(SettingsDialog):
 
 
 class ConnectionDialog(SettingsDialog):
+    conditions_changed = pyqtSignal()
+
     def __init__(self, item: ConnectionItem, attribute_options:list[AttributeItem]=[], parent=None):
         super().__init__(item, parent)
         self.setWindowTitle(f"Verbindung bearbeiten")
@@ -1296,13 +1420,16 @@ class ConnectionDialog(SettingsDialog):
     def _add_cond(self, cond: Condition):
         row = ConditionRow(cond, self._attribute_options)
         row.removed.connect(self._rm_cond)
+        row.changed.connect(self.conditions_changed.emit)
         self._cond_rows.append(row)
         self.vbox.addWidget(row)
+        self.conditions_changed.emit()
 
     def _rm_cond(self, row: ConditionRow):
         self._cond_rows.remove(row)
         self.vbox.removeWidget(row)
         row.deleteLater()
+        self.conditions_changed.emit()
 
     def result_data(self):
         return [row.get() for row in self._cond_rows]
@@ -1336,8 +1463,8 @@ class TextDialog(QDialog):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CONNECTION_KIND(Enum):
-    FLOW = True,
-    ATTRIBUTE = False
+    FLOW = False,
+    ATTRIBUTE = True
     
 class FlowScene(QGraphicsScene):
     status_message = pyqtSignal(str)
@@ -1398,7 +1525,7 @@ class FlowScene(QGraphicsScene):
         src = conn.src_port.parentItem()
         dst = conn.dst_port.parentItem()
         if isinstance(src, StationItem) and isinstance(dst, StationItem):
-            if conn.src_port.port_type == PORT_TYPE.INPUT and conn.dst_port.port_type == PORT_TYPE.OUTPUT:
+            if conn.src_port.port_type == PORT_TYPE.OUTPUT and conn.dst_port.port_type == PORT_TYPE.INPUT:
                 return CONNECTION_KIND.FLOW
         if isinstance(src, AttributeItem) and isinstance(dst, StationItem):
             if conn.src_port.port_type == PORT_TYPE.ATTR_OUTPUT and conn.dst_port.port_type == PORT_TYPE.ATTR_INPUT:
@@ -1468,6 +1595,12 @@ class FlowScene(QGraphicsScene):
                 target_port.connections.append(self._wip_conn)
                 self._connections.append(self._wip_conn)
                 self.addItem(self._wip_conn)
+                src_item = self._wip_src.parentItem()
+                dst_item = target_port.parentItem()
+                if hasattr(src_item, "_layout"):
+                    self.update_connections_for(src_item)
+                if hasattr(dst_item, "_layout") and dst_item is not src_item:
+                    self.update_connections_for(dst_item)
                 self.validate_all()
                 self.status_message.emit("Verbindung erstellt. Doppelklick auf Station zum Bearbeiten.")
             else:
@@ -1499,6 +1632,8 @@ class FlowScene(QGraphicsScene):
     # ── Verbindungen ─────────────────────────────────────────────────────────
 
     def _remove_conn(self, conn: ConnectionItem):
+        src_item = conn.src_port.parentItem() if conn.src_port else None
+        dst_item = conn.dst_port.parentItem() if conn.dst_port else None
         if conn.src_port and conn in conn.src_port.connections:
             conn.src_port.connections.remove(conn)
         if conn.dst_port and conn in conn.dst_port.connections:
@@ -1506,11 +1641,40 @@ class FlowScene(QGraphicsScene):
         if conn in self._connections:
             self._connections.remove(conn)
         self.removeItem(conn)
+        if hasattr(src_item, "_layout"):
+            self.update_connections_for(src_item)
+        if hasattr(dst_item, "_layout") and dst_item is not src_item:
+            self.update_connections_for(dst_item)
+        self.validate_all()
 
     def update_connections_for(self, item):
-        for c in item.all_connections() if hasattr(item, "all_connections") else []:
-            c.update_path()
-        self.validate_all()
+        if item is None:
+            return
+
+        affected = []
+        seen_items = set()
+        stack = [item]
+        while stack:
+            current = stack.pop()
+            if current in seen_items:
+                continue
+            seen_items.add(current)
+            affected.append(current)
+            for conn in current.all_connections() if hasattr(current, "all_connections") else []:
+                src_parent = conn.src_port.parentItem() if conn.src_port else None
+                dst_parent = conn.dst_port.parentItem() if conn.dst_port else None
+                if src_parent is not None and src_parent not in seen_items:
+                    stack.append(src_parent)
+                if dst_parent is not None and dst_parent not in seen_items:
+                    stack.append(dst_parent)
+
+        for current in affected:
+            if hasattr(current, "_layout"):
+                current._layout()
+
+        for current in affected:
+            for conn in current.all_connections() if hasattr(current, "all_connections") else []:
+                conn.update_path()
 
     # ── Editoren ─────────────────────────────────────────────────────────────
 
@@ -1526,9 +1690,8 @@ class FlowScene(QGraphicsScene):
             item.color        = d["color"]
             item.conditions   = d["conditions"]
             item.effects      = d["effects"]
-            item._layout()
-            item.update()
             self._refresh_template(item)
+            self.update_connections_for(item)
             self.validate_all()
 
     def open_attribute_editor(self, item: AttributeItem):
@@ -1539,16 +1702,27 @@ class FlowScene(QGraphicsScene):
             old_name = item.name
             item.name  = d["name"]
             item.color = d["color"]
-            item._layout()
-            item.update()
             self._refresh_template(item)
+            self.update_connections_for(item)
             self.validate_all()
 
     def open_connection_editor(self, conn: ConnectionItem):
         parent = self.views()[0] if self.views() else None
+        previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
+
+        def _preview_validate():
+            conn.conditions = dlg.result_data()
+            conn.update()
+            self.validate_all()
+
+        dlg.conditions_changed.connect(_preview_validate)
         if dlg.exec_() == QDialog.Accepted:
             conn.conditions = dlg.result_data()
+            conn.update()
+            self.validate_all()
+        else:
+            conn.conditions = previous_conditions
             conn.update()
             self.validate_all()
 
@@ -1568,6 +1742,7 @@ class FlowScene(QGraphicsScene):
 
     def validate_all(self):
         stations = self._station_items()
+        attrs = self._attribute_items()
         if not stations:
             return
 
@@ -1576,15 +1751,15 @@ class FlowScene(QGraphicsScene):
             conn._invalid_reasons = []
 
         # Baue den Flow-Graph auf
-        flow_preds = {s: [] for s in stations}  # Eingehende Flow-Kanten
-        flow_succs = {s: [] for s in stations}  # Ausgehende Flow-Kanten
-        attr_inputs = {s: [] for s in stations}  # Eingehende Attribut-Kanten
+        flow_preds = {s: [] for s in stations+attrs}  # Eingehende Flow-Kanten
+        flow_succs = {s: [] for s in stations+attrs}  # Ausgehende Flow-Kanten
+        attr_inputs = {s: [] for s in stations+attrs}  # Eingehende Attribut-Kanten
 
         for conn in self._connections:
             kind = self._connection_kind(conn)
             if kind is None:
                 continue
-            if kind.value:  # FLOW connection
+            if kind == CONNECTION_KIND.FLOW:  # FLOW connection
                 src = conn.src_port.parentItem()
                 dst = conn.dst_port.parentItem()
                 flow_preds[dst].append((conn, src))
@@ -1597,67 +1772,53 @@ class FlowScene(QGraphicsScene):
         root_stations = [s for s in stations if len(flow_preds[s]) == 0]
         
         # Durchsuche Graph mittels DFS von jeder Root-Station
-        visited_stations = set()
-        validated_connections = set()
+        conn_states = {c:[] for c in self._connections}
 
         def dfs_validate(station: StationItem, incoming_state: dict):
             """DFS Traversierung mit Zustandspropagation und Validierung."""
-            if station in visited_stations:
-                return
-            visited_stations.add(station)
+            #if station in visited_stations:
+                #return
+            #visited_stations.add(station)
 
             # Validiere eingehende Flow-Verbindungen
             for conn, src_station in flow_preds[station]:
-                if conn in validated_connections:
-                    continue
-                validated_connections.add(conn)
-
                 # Prüfe Bedingungen auf der Verbindung und der Zielstation
                 conn_conds_ok = self._conditions_ok(conn.conditions, incoming_state)
                 station_conds_ok = self._conditions_ok(station.conditions, incoming_state)
-
+                conn_cond_states = {cond.attribute.name: incoming_state.get(cond.attribute) for cond in conn_conds_ok}
+                station_cond_states = {cond.attribute.name: incoming_state.get(cond.attribute) for cond in station_conds_ok}
                 if len(conn_conds_ok)<=0 and len(station_conds_ok)<=0:
-                    conn.set_state(CONNECTION_STATE.VALID)
+                    conn_states[conn].append(CONNECTION_STATE.VALID)
+                    #conn.set_state(CONNECTION_STATE.VALID)
+                    
                 elif not len(conn_conds_ok)<=0 and len(station_conds_ok)<=0:
-                    conn.set_state(CONNECTION_STATE.CONDITIONAL_VALID)
+                    conn_states[conn].append(CONNECTION_STATE.CONDITIONAL_VALID)
+                    #conn.set_state(CONNECTION_STATE.CONDITIONAL_VALID)
                     for cond in conn_conds_ok:
                         conn._invalid_reasons.append(
-                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)}"
+                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)} ({conn_cond_states})"
                             )
                 elif len(conn_conds_ok)<=0 and not len(station_conds_ok)<=0:
-                    conn.set_state(CONNECTION_STATE.CONDITIONAL_INVALID)
+                    conn_states[conn].append(CONNECTION_STATE.INVALID)
+                    #conn.set_state(CONNECTION_STATE.CONDITIONAL_INVALID)
                     for cond in station_conds_ok:
                         conn._invalid_reasons.append(
-                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)}"
+                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)} ({station_cond_states})"
                             )
                 elif not len(conn_conds_ok)<=0 and not len(station_conds_ok)<=0:
-                    conn.set_state(CONNECTION_STATE.INVALID)
+                    conn_states[conn].append(CONNECTION_STATE.CONDITIONAL_INVALID)
+                    #conn.set_state(CONNECTION_STATE.INVALID)
                     for cond in conn_conds_ok:
                         conn._invalid_reasons.append(
-                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)}"
+                                f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)} ({conn_cond_states})"
                             )
                     for cond in station_conds_ok:
                         conn._invalid_reasons.append(
-                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)}"
+                                f"Die {station.name} bedingung ist nicht erfüllt: {str(cond)} ({station_cond_states})"
                             )
-
-            # Validiere eingehende Attribut-Verbindungen
-            for conn in attr_inputs[station]:
-                if conn in validated_connections:
-                    continue
-                validated_connections.add(conn)
-
-                src_item = conn.src_port.parentItem()
-                if not isinstance(src_item, AttributeItem):
-                    conn._invalid_reasons = ["Attributverbindung hat keine gültige Attributquelle."]
-                    conn.set_state(CONNECTION_STATE.INVALID)
-                    continue
-
-                conn.set_state(CONNECTION_STATE.VALID)
 
             # Wende Effekte an, um Ausgabe-State zu erhalten
             output_state = self._apply_effects(incoming_state, station.effects)
-
             # Rekursiv validiere Nachfolger-Stationen
             for conn, succ_station in flow_succs[station]:
                 dfs_validate(succ_station, output_state)
@@ -1665,10 +1826,10 @@ class FlowScene(QGraphicsScene):
         # Starte DFS von jeder Root-Station mit leerem State
         for root in root_stations:
             dfs_validate(root, {})
-
+            
         # Behandle unvisitierte Verbindungen (isolierte oder fehlerhafte Verbindungen)
         for conn in self._connections:
-            if conn not in validated_connections:
+            if conn not in conn_states or len(conn_states[conn])<=0:
                 if not conn.src_port or not conn.dst_port:
                     conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
                     conn.set_state(CONNECTION_STATE.UNKNOWN)
@@ -1677,6 +1838,13 @@ class FlowScene(QGraphicsScene):
                     if kind is None:
                         conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen."]
                         conn.set_state(CONNECTION_STATE.UNKNOWN)
+            elif len(conn_states[conn])>0:
+                conns = conn_states[conn]
+                conn.set_state(conns[np.argmax([c.value for c in conns])])
+
+        for item in self.selectedItems():
+            if isinstance(item, ConnectionItem):
+                item.setSelected(False)
 
         self.status_message.emit(
             f"{len(self._connections)} Verbindung(en) validiert  –  "
@@ -1895,10 +2063,6 @@ class Palette(QWidget):
             "Verbinden:\nStation-Ausgang (blau) → Station-Eingang (grün)\nAttribut-Ausgang (gelb) → Attribut-Eingang (orange)\n\n"
             "Doppelklick = bearbeiten\nEntf = löschen\n"
             "Scroll = zoom\n\n"
-            "Linienfarbe:\n"
-            "🟢 alle Pfade gültig\n"
-            "🔴 mind. ein Pfad ungültig\n"
-            "⚫ ungeprüft"
         )
         self.hints = QLabel(self._default_help_text)
         self.hints.setFont(QFont("Segoe UI", 8))
@@ -1945,7 +2109,19 @@ class Palette(QWidget):
         reasons = list(getattr(conn, "_invalid_reasons", []) or [])
         if not reasons:
             reasons = ["Dieser Pfeil ist ungültig, es wurde jedoch keine Detailursache gefunden."]
-        lines = ["Dieser Pfeil ist nicht korrekt, weil:", ""]
+        correctness = ""
+        match(conn._state):
+            case CONNECTION_STATE.VALID:
+                correctness = "gültig"
+            case CONNECTION_STATE.CONDITIONAL_VALID:
+                correctness = "bedingt gültig"
+            case CONNECTION_STATE.CONDITIONAL_INVALID:
+                correctness = "bedingt ungültig"
+            case CONNECTION_STATE.INVALID:
+                correctness = "ungültig"
+            case _:
+                correctness = "ungeprüft" 
+        lines = [f"Dieser Pfeil ist {correctness}, weil:", ""]
         for idx, reason in enumerate(reasons, start=1):
             lines.append(f"{idx}. {reason}")
         lines.append("")
@@ -2243,9 +2419,7 @@ class MainWindow(QMainWindow):
     def _choose_file(self, save: bool, title: str, default_name: str, name_filter: str):
         start_dir = os.path.expanduser("~")
         start_path = os.path.join(start_dir, default_name) if default_name else start_dir
-        print(start_path)
         options = QFileDialog.Options()
-        print(options)
         if save:
             path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -2259,14 +2433,13 @@ class MainWindow(QMainWindow):
                 title,
                 start_path,
                 name_filter,
-            )
-        print(path)    
+            )    
         return path or default_name
 
     def _on_scene_selection_changed(self):
         selected = self.scene.selectedItems()
         invalid_conn = next(
-            (item for item in selected if isinstance(item, ConnectionItem) and item._state is CONNECTION_STATE.INVALID),
+            (item for item in selected if isinstance(item, ConnectionItem) and item._state is not CONNECTION_STATE.VALID),
             None,
         )
         if invalid_conn is not None:

@@ -17,6 +17,7 @@ classifiers = [
 ]
 dependencies = [
   "PyQt5",
+  "numpy"
 ]
 
 [project.optional-dependencies]
