@@ -11,6 +11,9 @@ Starten:
 
 import sys
 import math
+import uuid
+import json
+import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QAbstractItemView,
@@ -18,7 +21,7 @@ from PyQt5.QtWidgets import (
     QGraphicsPathItem, QGraphicsRectItem, QFrame, QDialog, QDialogButtonBox,
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
     QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar,
-    QSpacerItem, QStatusBar
+    QSpacerItem, QStatusBar, QFileDialog
 )
 from PyQt5.QtCore import (
     Qt, QRectF, QPointF, QLineF, QPoint, QRect, pyqtSignal, QMimeData,
@@ -29,6 +32,7 @@ from PyQt5.QtGui import (
     QPainterPath, QPolygonF, QPixmap, QDrag, QPalette, QKeyEvent, QTransform,
     QFontMetrics, QIcon, QCursor
 )
+from PyQt5.QtPrintSupport import QPrinter
 from collections import deque
 
 
@@ -38,36 +42,102 @@ from collections import deque
 
 class Condition:
     """Vorbedingung an einem Produktattribut."""
+    SUBJECT_VALUE = "value"
+    SUBJECT_COUNT = "count"
+
     OP_EXISTS     = "exists"
     OP_NOT_EXISTS = "not_exists"
     OP_EQUALS     = "equals"
     OP_NOT_EQUALS = "not_equals"
+    OP_GREATER    = "greater"
+    OP_GREATER_EQ = "greater_eq"
+    OP_LESS       = "less"
+    OP_LESS_EQ    = "less_eq"
+
+    SUBJECT_LABELS = {
+        SUBJECT_VALUE: "Attribut",
+        SUBJECT_COUNT: "Anzahl",
+    }
 
     OP_LABELS = {
         OP_EXISTS:     "existiert",
         OP_NOT_EXISTS: "existiert nicht",
-        OP_EQUALS:     "= Wert",
-        OP_NOT_EQUALS: "≠ Wert",
+        OP_EQUALS:     "= Eintrag",
+        OP_NOT_EQUALS: "≠ Eintrag",
+        OP_GREATER:    ">",
+        OP_GREATER_EQ: ">=",
+        OP_LESS:       "<",
+        OP_LESS_EQ:    "<=",
     }
 
-    def __init__(self, attribute="", operator=None, value=""):
+    def __init__(self, attribute="", subject=None, operator=None, value=""):
         self.attribute = attribute
+        self.subject   = subject or self.SUBJECT_VALUE
         self.operator  = operator or self.OP_EXISTS
         self.value     = value
 
+    @staticmethod
+    def _state_for(attrs: dict, attribute: str):
+        state = attrs.get(attribute)
+        if isinstance(state, dict):
+            return state
+        if state is None:
+            return None
+        return {"value": state, "count": 1}
+
+    def _as_number(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
     def check(self, attrs: dict) -> bool:
+        state = self._state_for(attrs, self.attribute)
+        if self.subject == self.SUBJECT_COUNT:
+            count = 0 if state is None else self._as_number(state.get("count", 0))
+            if self.operator == self.OP_EXISTS:
+                return count > 0
+            if self.operator == self.OP_NOT_EXISTS:
+                return count <= 0
+            target = self._as_number(self.value)
+            if self.operator == self.OP_EQUALS:
+                return count == target
+            if self.operator == self.OP_NOT_EQUALS:
+                return count != target
+            if self.operator == self.OP_GREATER:
+                return count > target
+            if self.operator == self.OP_GREATER_EQ:
+                return count >= target
+            if self.operator == self.OP_LESS:
+                return count < target
+            if self.operator == self.OP_LESS_EQ:
+                return count <= target
+            return True
+
         if self.operator == self.OP_EXISTS:
-            return self.attribute in attrs
+            return state is not None
         if self.operator == self.OP_NOT_EXISTS:
-            return self.attribute not in attrs
+            return state is None
+        current = None if state is None else state.get("value")
         if self.operator == self.OP_EQUALS:
-            return attrs.get(self.attribute) == self.value
+            return current == self.value
         if self.operator == self.OP_NOT_EQUALS:
-            return attrs.get(self.attribute) != self.value
+            return current != self.value
         return True
 
     def __str__(self):
         a = self.attribute or "?"
+        if self.subject == self.SUBJECT_COUNT:
+            prefix = f"Anzahl(⟨{a}⟩)"
+            if self.operator == self.OP_EXISTS:
+                return f"{prefix} vorhanden"
+            if self.operator == self.OP_NOT_EXISTS:
+                return f"{prefix} fehlt"
+            if self.operator in {self.OP_EQUALS, self.OP_NOT_EQUALS,
+                                 self.OP_GREATER, self.OP_GREATER_EQ,
+                                 self.OP_LESS, self.OP_LESS_EQ}:
+                return f"{prefix} {self.OP_LABELS.get(self.operator, self.operator)} {self.value}"
+            return prefix
         if self.operator == self.OP_EXISTS:
             return f"⟨{a}⟩ vorhanden"
         if self.operator == self.OP_NOT_EXISTS:
@@ -100,7 +170,11 @@ class Effect:
         """Wendet den Effekt an und gibt ein neues dict zurück."""
         attrs = dict(attrs)
         if self.action in (self.ACT_ADD, self.ACT_SET):
-            attrs[self.attribute] = self.value
+            current = attrs.get(self.attribute)
+            count = 1
+            if isinstance(current, dict):
+                count = max(1, int(current.get("count", 1)))
+            attrs[self.attribute] = {"value": self.value, "count": count}
         elif self.action == self.ACT_REMOVE:
             attrs.pop(self.attribute, None)
         return attrs
@@ -143,6 +217,8 @@ PALETTE_COLORS = [
 class Port(QGraphicsEllipseItem):
     INPUT  = "input"
     OUTPUT = "output"
+    ATTR_INPUT  = "attr_input"
+    ATTR_OUTPUT = "attr_output"
 
     def __init__(self, port_type: str, parent: QGraphicsItem):
         r = PORT_R
@@ -158,9 +234,21 @@ class Port(QGraphicsEllipseItem):
         if self.port_type == self.INPUT:
             self.setBrush(QBrush(QColor("#22C55E")))
             self.setPen(QPen(QColor("#15803D"), 1.5))
+        elif self.port_type == self.ATTR_INPUT:
+            self.setBrush(QBrush(QColor("#F59E0B")))
+            self.setPen(QPen(QColor("#B45309"), 1.5))
+        elif self.port_type == self.ATTR_OUTPUT:
+            self.setBrush(QBrush(QColor("#FBBF24")))
+            self.setPen(QPen(QColor("#B45309"), 1.5))
         else:
             self.setBrush(QBrush(QColor("#3B82F6")))
             self.setPen(QPen(QColor("#1D4ED8"), 1.5))
+
+    def is_input(self) -> bool:
+        return self.port_type in {self.INPUT, self.ATTR_INPUT}
+
+    def is_output(self) -> bool:
+        return self.port_type in {self.OUTPUT, self.ATTR_OUTPUT}
 
     def hoverEnterEvent(self, event):
         self.setBrush(QBrush(QColor("#FCD34D")))
@@ -184,8 +272,10 @@ class StationItem(QGraphicsItem):
         super().__init__()
         self.station_name = name
         self.color        = color or QColor("#2563EB")
+        self.node_id      = uuid.uuid4().hex
         self.conditions   = []   # list[Condition]
         self.effects      = []   # list[Effect]
+        self.template_id  = uuid.uuid4().hex
 
         self.setFlags(
             QGraphicsItem.ItemIsMovable |
@@ -199,6 +289,7 @@ class StationItem(QGraphicsItem):
 
         self.in_port  = Port(Port.INPUT,  self)
         self.out_port = Port(Port.OUTPUT, self)
+        self.attr_port = Port(Port.ATTR_INPUT, self)
         self._layout()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -208,6 +299,7 @@ class StationItem(QGraphicsItem):
         extra = max(0, rows - 1) * LINE_H
         self._h = STATION_H_MIN + extra
         half_h = self._h / 2
+        self.attr_port.setPos(0, HEADER_H / 2)
         self.in_port.setPos(0, half_h)
         self.out_port.setPos(self._w, half_h)
         self.prepareGeometryChange()
@@ -241,7 +333,7 @@ class StationItem(QGraphicsItem):
         body_path = QPainterPath()
         body_path.addRoundedRect(rect, 10, 10)
         grad = QLinearGradient(0, 0, 0, self._h)
-        c = self.color
+        c = QColor(self.color)
         grad.setColorAt(0.0, c.lighter(135))
         grad.setColorAt(0.5, c)
         grad.setColorAt(1.0, c.darker(115))
@@ -273,7 +365,7 @@ class StationItem(QGraphicsItem):
 
         # ── Conditions ──
         y = HEADER_H + 5
-        painter.setFont(QFont("Consolas", 7.5))
+        painter.setFont(QFont("Consolas", 7))
 
         if self.conditions:
             for cond in self.conditions:
@@ -314,7 +406,104 @@ class StationItem(QGraphicsItem):
             self.scene().open_station_editor(self)
 
     def all_connections(self):
+        return list(self.in_port.connections) + list(self.out_port.connections) + list(self.attr_port.connections)
+
+    def flow_connections(self):
         return list(self.in_port.connections) + list(self.out_port.connections)
+
+    def clone(self):
+        item = StationItem(self.station_name, QColor(self.color))
+        item.conditions = [Condition(c.attribute, c.subject, c.operator, c.value) for c in self.conditions]
+        item.effects = [Effect(e.action, e.attribute, e.value) for e in self.effects]
+        item._layout()
+        return item
+
+
+class AttributeItem(QGraphicsItem):
+    ItemType = QGraphicsItem.UserType + 4
+
+    def __init__(self, name: str = "Attribut", count: int = 1, color: QColor = None):
+        super().__init__()
+        self.attribute_name = name
+        self.attribute_count = count
+        self.color           = color or QColor("#F59E0B")
+        self.node_id         = uuid.uuid4().hex
+        self.template_id     = uuid.uuid4().hex
+
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemIsSelectable |
+            QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setAcceptHoverEvents(True)
+
+        self._w = 180
+        self._h = 64
+        self.out_port = Port(Port.ATTR_OUTPUT, self)
+        self._layout()
+
+    def _layout(self):
+        self.out_port.setPos(self._w, self._h / 2)
+        self.prepareGeometryChange()
+
+    def type(self):
+        return self.ItemType
+
+    def boundingRect(self) -> QRectF:
+        m = PORT_R + 2
+        return QRectF(-m, -m, self._w + m * 2, self._h + m * 2)
+
+    def shape(self) -> QPainterPath:
+        p = QPainterPath()
+        p.addRoundedRect(QRectF(0, 0, self._w, self._h), 12, 12)
+        return p
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(0, 0, self._w, self._h)
+
+        shadow = QPainterPath()
+        shadow.addRoundedRect(rect.adjusted(2, 3, 2, 3), 8, 8)
+        painter.fillPath(shadow, QColor(0, 0, 0, 28))
+
+        body = QPainterPath()
+        body.addRoundedRect(rect, 8, 8)
+        grad = QLinearGradient(0, 0, 0, self._h)
+        c = QColor(self.color)
+        grad.setColorAt(0.0, c.lighter(140))
+        grad.setColorAt(1.0, c.darker(115))
+        painter.fillPath(body, QBrush(grad))
+
+        if self.isSelected():
+            painter.setPen(QPen(QColor("#FCD34D"), 2.5))
+        else:
+            painter.setPen(QPen(c.darker(160), 1.2))
+        painter.drawPath(body)
+
+        painter.setPen(QColor(255, 255, 255, 240))
+        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.drawText(QRectF(10, 8, self._w - 20, 18), Qt.AlignLeft | Qt.AlignVCenter, self.attribute_name)
+
+        painter.setFont(QFont("Consolas", 8))
+        painter.drawText(QRectF(10, 42, self._w - 20, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                         f"Anzahl: {self.attribute_count}")
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
+            self.scene().update_connections_for(self)
+        return super().itemChange(change, value)
+
+    def mouseDoubleClickEvent(self, event):
+        if self.scene():
+            self.scene().open_attribute_editor(self)
+
+    def all_connections(self):
+        return list(self.out_port.connections)
+
+    def clone(self):
+        item = AttributeItem(self.attribute_name, self.attribute_count, QColor(self.color))
+        item._layout()
+        return item
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -326,6 +515,7 @@ class TextBlockItem(QGraphicsItem):
 
     def __init__(self, text: str = "Beschreibung ..."):
         super().__init__()
+        self.node_id = uuid.uuid4().hex
         self._text = text
         self._w    = 180
         self._h    = 70
@@ -416,9 +606,11 @@ class ConnectionItem(QGraphicsPathItem):
         super().__init__()
         self.src_port   = src_port
         self.dst_port   = dst_port
+        self.conditions = []
+        self._invalid_reasons = []
         self._state     = self.STATE_UNKNOWN
         self._drag_end  = None
-        self.setZValue(8)
+        self.setZValue(-5)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self._rebuild()
 
@@ -468,6 +660,9 @@ class ConnectionItem(QGraphicsPathItem):
             self._state = state
             self._apply_style()
 
+    def doubleClickTarget(self):
+        return self.src_port.parentItem() if self.src_port else None
+
     # ── Paint (Pfeilspitze) ───────────────────────────────────────────────────
 
     def paint(self, painter: QPainter, option, widget=None):
@@ -502,8 +697,24 @@ class ConnectionItem(QGraphicsPathItem):
         painter.setBrush(QBrush(self.pen().color()))
         painter.drawPolygon(arrow)
 
+        if self.conditions:
+            # Ein Stern markiert Bedingungen direkt im Editor.
+            mid = path.pointAtPercent(0.5)
+            star_rect = QRectF(mid.x() - 9, mid.y() - 13, 18, 18)
+            painter.setPen(QPen(QColor("#FCD34D"), 1.2))
+            painter.setBrush(QBrush(QColor(15, 23, 42, 230)))
+            painter.drawRoundedRect(star_rect, 4, 4)
+            painter.setPen(QColor("#FCD34D"))
+            painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+            painter.drawText(star_rect, Qt.AlignCenter, "*")
+
     def boundingRect(self) -> QRectF:
         return super().boundingRect().adjusted(-15, -15, 15, 15)
+
+    def mouseDoubleClickEvent(self, event):
+        scene = self.scene()
+        if scene and hasattr(scene, "open_connection_editor"):
+            scene.open_connection_editor(self)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -595,48 +806,106 @@ QScrollArea { border: none; background: transparent; }
 class ConditionRow(QWidget):
     removed = pyqtSignal(object)
 
-    def __init__(self, cond: Condition, parent=None):
+    def __init__(self, cond: Condition, attribute_options=None, parent=None):
         super().__init__(parent)
         self._cond = cond
+        self._attribute_options = list(attribute_options or [])
         lo = QHBoxLayout(self)
         lo.setContentsMargins(0, 2, 0, 2)
         lo.setSpacing(4)
 
-        self.attr = QLineEdit(cond.attribute)
-        self.attr.setPlaceholderText("Attribut")
-        self.attr.setFixedWidth(110)
+        self.subject = QComboBox()
+        for key, label in Condition.SUBJECT_LABELS.items():
+            self.subject.addItem(label, key)
+        idx = self.subject.findData(cond.subject)
+        self.subject.setCurrentIndex(max(idx, 0))
+        self.subject.currentIndexChanged.connect(self._refresh_ops)
+
+        self.attr = QComboBox()
+        self.attr.setFixedWidth(160)
+        self._fill_attribute_dropdown(cond.attribute)
 
         self.op = QComboBox()
-        self._ops = [Condition.OP_EXISTS, Condition.OP_NOT_EXISTS,
-                     Condition.OP_EQUALS, Condition.OP_NOT_EQUALS]
-        for lbl in Condition.OP_LABELS.values():
-            self.op.addItem(lbl)
-        idx = self._ops.index(cond.operator) if cond.operator in self._ops else 0
-        self.op.setCurrentIndex(idx)
         self.op.currentIndexChanged.connect(self._on_op)
 
         self.val = QLineEdit(cond.value)
-        self.val.setPlaceholderText("Wert")
+        self.val.setPlaceholderText("Eintrag / Anzahl")
         self.val.setFixedWidth(90)
-        self.val.setVisible(idx >= 2)
+        self._refresh_ops()
+        op_idx = self.op.findData(cond.operator)
+        self.op.setCurrentIndex(max(op_idx, 0))
+        self._on_op(self.op.currentIndex())
 
         btn = QPushButton("✕")
         btn.setObjectName("del_btn")
         btn.setFixedSize(22, 22)
         btn.clicked.connect(lambda: self.removed.emit(self))
 
+        lo.addWidget(self.subject)
         lo.addWidget(self.attr)
         lo.addWidget(self.op)
         lo.addWidget(self.val)
         lo.addWidget(btn)
 
+    def _ops_for_subject(self):
+        subject = self.subject.currentData()
+        if subject == Condition.SUBJECT_COUNT:
+            return [
+                Condition.OP_EXISTS,
+                Condition.OP_NOT_EXISTS,
+                Condition.OP_EQUALS,
+                Condition.OP_NOT_EQUALS,
+                Condition.OP_GREATER,
+                Condition.OP_GREATER_EQ,
+                Condition.OP_LESS,
+                Condition.OP_LESS_EQ,
+            ]
+        return [
+            Condition.OP_EXISTS,
+            Condition.OP_NOT_EXISTS,
+            Condition.OP_EQUALS,
+            Condition.OP_NOT_EQUALS,
+        ]
+
+    def _refresh_ops(self, *args):
+        current = self.op.currentData()
+        self.op.blockSignals(True)
+        self.op.clear()
+        for op_key in self._ops_for_subject():
+            self.op.addItem(Condition.OP_LABELS.get(op_key, op_key), op_key)
+        idx = self.op.findData(current)
+        self.op.setCurrentIndex(max(idx, 0))
+        self.op.blockSignals(False)
+        self._on_op(self.op.currentIndex())
+
     def _on_op(self, idx):
-        self.val.setVisible(idx >= 2)
+        op_key = self.op.itemData(idx)
+        self.val.setVisible(op_key not in {Condition.OP_EXISTS, Condition.OP_NOT_EXISTS})
+
+    def _fill_attribute_dropdown(self, selected_attr: str):
+        seen = set()
+        self.attr.clear()
+        self.attr.addItem("(Attribut wählen)", "")
+        seen.add("")
+        for name in self._attribute_options:
+            key = (name or "").strip()
+            if key and key not in seen:
+                self.attr.addItem(key, key)
+                seen.add(key)
+        selected = (selected_attr or "").strip()
+        if selected and selected not in seen:
+            self.attr.addItem(selected, selected)
+            seen.add(selected)
+        idx = self.attr.findData(selected)
+        if idx < 0:
+            idx = 0
+        self.attr.setCurrentIndex(idx)
 
     def get(self) -> Condition:
         return Condition(
-            self.attr.text(),
-            self._ops[self.op.currentIndex()],
+            self.attr.currentData() or "",
+            self.subject.currentData(),
+            self.op.currentData(),
             self.val.text()
         )
 
@@ -644,9 +913,10 @@ class ConditionRow(QWidget):
 class EffectRow(QWidget):
     removed = pyqtSignal(object)
 
-    def __init__(self, eff: Effect, parent=None):
+    def __init__(self, eff: Effect, attribute_options=None, parent=None):
         super().__init__(parent)
         self._eff = eff
+        self._attribute_options = list(attribute_options or [])
         lo = QHBoxLayout(self)
         lo.setContentsMargins(0, 2, 0, 2)
         lo.setSpacing(4)
@@ -659,12 +929,12 @@ class EffectRow(QWidget):
         self.act.setCurrentIndex(idx)
         self.act.currentIndexChanged.connect(self._on_act)
 
-        self.attr = QLineEdit(eff.attribute)
-        self.attr.setPlaceholderText("Attribut")
-        self.attr.setFixedWidth(110)
+        self.attr = QComboBox()
+        self.attr.setFixedWidth(160)
+        self._fill_attribute_dropdown(eff.attribute)
 
         self.val = QLineEdit(eff.value)
-        self.val.setPlaceholderText("Wert")
+        self.val.setPlaceholderText("Anzahl")
         self.val.setFixedWidth(90)
         self.val.setVisible(idx != 1)
 
@@ -681,24 +951,47 @@ class EffectRow(QWidget):
     def _on_act(self, idx):
         self.val.setVisible(idx != 1)
 
+    def _fill_attribute_dropdown(self, selected_attr: str):
+        seen = set()
+        self.attr.clear()
+        self.attr.addItem("(Attribut wählen)", "")
+        seen.add("")
+        for name in self._attribute_options:
+            key = (name or "").strip()
+            if key and key not in seen:
+                self.attr.addItem(key, key)
+                seen.add(key)
+        selected = (selected_attr or "").strip()
+        if selected and selected not in seen:
+            self.attr.addItem(selected, selected)
+        idx = self.attr.findData(selected)
+        if idx < 0:
+            idx = 0
+        self.attr.setCurrentIndex(idx)
+
     def get(self) -> Effect:
         return Effect(
             self._acts[self.act.currentIndex()],
-            self.attr.text(),
+            self.attr.currentData() or "",
             self.val.text()
         )
 
 
 class StationDialog(QDialog):
-    def __init__(self, item: StationItem, parent=None):
+    def __init__(self, item: StationItem, attribute_options=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Station bearbeiten")
         self.setMinimumWidth(530)
         self.setStyleSheet(DIALOG_STYLE)
-        self._color = item.color
+        self._color = QColor(item.color)
+        self._attribute_options = list(attribute_options or [])
         self._cond_rows: list[ConditionRow] = []
         self._eff_rows:  list[EffectRow]    = []
         self._build(item)
+
+    @staticmethod
+    def _copy_condition(cond: Condition) -> Condition:
+        return Condition(cond.attribute, cond.subject, cond.operator, cond.value)
 
     def _build(self, item: StationItem):
         root = QVBoxLayout(self)
@@ -723,7 +1016,7 @@ class StationDialog(QDialog):
         self._cond_scroll, self._cond_inner, self._cond_vbox = self._make_scroll()
         cg.addWidget(self._cond_scroll)
         for c in item.conditions:
-            self._add_cond(Condition(c.attribute, c.operator, c.value))
+            self._add_cond(self._copy_condition(c))
         btn_c = QPushButton("＋  Bedingung hinzufügen")
         btn_c.setObjectName("add_btn")
         btn_c.clicked.connect(lambda: self._add_cond(Condition()))
@@ -778,7 +1071,7 @@ class StationDialog(QDialog):
             self._refresh_color_btn()
 
     def _add_cond(self, cond: Condition):
-        w = ConditionRow(cond)
+        w = ConditionRow(cond, self._attribute_options)
         w.removed.connect(self._rm_cond)
         self._cond_rows.append(w)
         self._cond_vbox.addWidget(w)
@@ -789,7 +1082,7 @@ class StationDialog(QDialog):
         w.deleteLater()
 
     def _add_eff(self, eff: Effect):
-        w = EffectRow(eff)
+        w = EffectRow(eff, self._attribute_options)
         w.removed.connect(self._rm_eff)
         self._eff_rows.append(w)
         self._eff_vbox.addWidget(w)
@@ -806,6 +1099,125 @@ class StationDialog(QDialog):
             "conditions": [r.get() for r in self._cond_rows],
             "effects":    [r.get() for r in self._eff_rows],
         }
+
+
+class AttributeDialog(QDialog):
+    def __init__(self, item: AttributeItem, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Attribut bearbeiten")
+        self.setMinimumWidth(400)
+        self.setStyleSheet(DIALOG_STYLE)
+        self._color = item.color
+
+        lo = QVBoxLayout(self)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Name:"))
+        self.name_edit = QLineEdit(item.attribute_name)
+        row.addWidget(self.name_edit, 1)
+        lo.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Anzahl:"))
+        self.count_edit = QLineEdit(str(item.attribute_count))
+        self.count_edit.setFixedWidth(100)
+        row2.addWidget(self.count_edit)
+        row2.addWidget(QLabel("Farbe:"))
+        self.col_btn = QPushButton()
+        self.col_btn.setFixedSize(36, 26)
+        self._refresh_color_btn()
+        self.col_btn.clicked.connect(self._pick_color)
+        row2.addWidget(self.col_btn)
+        row2.addStretch(1)
+        lo.addLayout(row2)
+
+        btns = QDialogButtonBox()
+        ok = btns.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
+        ok.setObjectName("ok_btn")
+        btns.addButton("Abbrechen", QDialogButtonBox.RejectRole)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lo.addWidget(btns)
+
+    def _refresh_color_btn(self):
+        self.col_btn.setStyleSheet(
+            f"background:{QColor(self._color).name()}; border:1px solid #475569; border-radius:4px;"
+        )
+
+    def _pick_color(self):
+        c = QColorDialog.getColor(QColor(self._color), self)
+        if c.isValid():
+            self._color = c
+            self._refresh_color_btn()
+
+    def result_data(self):
+        try:
+            count = int(self.count_edit.text().strip() or "1")
+        except ValueError:
+            count = 1
+        return {
+            "name": self.name_edit.text().strip() or "Attribut",
+            "count": max(0, count),
+            "color": QColor(self._color),
+        }
+
+
+class ConnectionDialog(QDialog):
+    def __init__(self, conn: ConnectionItem, attribute_options=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Verbindung bearbeiten")
+        self.setMinimumWidth(520)
+        self.setStyleSheet(DIALOG_STYLE)
+        self._attribute_options = list(attribute_options or [])
+        self._rows: list[ConditionRow] = []
+        self._build(conn)
+
+    @staticmethod
+    def _copy_condition(cond: Condition) -> Condition:
+        return Condition(cond.attribute, cond.subject, cond.operator, cond.value)
+
+    def _build(self, conn: ConnectionItem):
+        root = QVBoxLayout(self)
+        src = conn.src_port.parentItem().station_name if isinstance(conn.src_port.parentItem(), StationItem) else getattr(conn.src_port.parentItem(), "attribute_name", "?")
+        dst_parent = conn.dst_port.parentItem() if conn.dst_port else None
+        dst = dst_parent.station_name if isinstance(dst_parent, StationItem) else getattr(dst_parent, "attribute_name", "?")
+
+        info = QLabel(f"Von: {src}    Nach: {dst}")
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        grp = QGroupBox("Bedingungen an dieser Verbindung")
+        vg = QVBoxLayout(grp)
+        self.scroll, self.inner, self.vbox = StationDialog._make_scroll()
+        vg.addWidget(self.scroll)
+        for cond in conn.conditions:
+            self._add_cond(self._copy_condition(cond))
+        add_btn = QPushButton("＋  Bedingung hinzufügen")
+        add_btn.setObjectName("add_btn")
+        add_btn.clicked.connect(lambda: self._add_cond(Condition()))
+        vg.addWidget(add_btn)
+        root.addWidget(grp)
+
+        btns = QDialogButtonBox()
+        ok = btns.addButton("Übernehmen", QDialogButtonBox.AcceptRole)
+        ok.setObjectName("ok_btn")
+        btns.addButton("Abbrechen", QDialogButtonBox.RejectRole)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _add_cond(self, cond: Condition):
+        row = ConditionRow(cond, self._attribute_options)
+        row.removed.connect(self._rm_cond)
+        self._rows.append(row)
+        self.vbox.addWidget(row)
+
+    def _rm_cond(self, row: ConditionRow):
+        self._rows.remove(row)
+        self.vbox.removeWidget(row)
+        row.deleteLater()
+
+    def result_data(self):
+        return [row.get() for row in self._rows]
 
 
 class TextDialog(QDialog):
@@ -844,22 +1256,176 @@ class FlowScene(QGraphicsScene):
         self._connections: list[ConnectionItem] = []
         self._wip_conn:    ConnectionItem | None = None
         self._wip_src:     Port | None           = None
+        self.palette_widget = None
+
+    def set_palette(self, palette_widget):
+        self.palette_widget = palette_widget
+
+    def _register_template(self, item):
+        if self.palette_widget and hasattr(self.palette_widget, "register_item"):
+            self.palette_widget.register_item(item)
+
+    @staticmethod
+    def _is_station(item) -> bool:
+        return isinstance(item, StationItem)
+
+    @staticmethod
+    def _is_attribute(item) -> bool:
+        return isinstance(item, AttributeItem)
+
+    @staticmethod
+    def _state_from_attribute(item: AttributeItem) -> dict:
+        try:
+            count = max(0, int(item.attribute_count))
+        except (TypeError, ValueError):
+            count = 0
+        return {
+            item.attribute_name: {
+                "count": count,
+            }
+        }
+
+    @staticmethod
+    def _merge_states(base: dict, extra: dict) -> dict:
+        merged = {key: (dict(value) if isinstance(value, dict) else {"value": value, "count": 1})
+                  for key, value in base.items()}
+        for key, value in extra.items():
+            if not isinstance(value, dict):
+                value = {"value": value, "count": 1}
+            if key in merged:
+                existing = merged[key]
+                existing["count"] = max(0, int(existing.get("count", 0))) + max(0, int(value.get("count", 0)))
+                if value.get("value") not in (None, ""):
+                    existing["value"] = value.get("value")
+            else:
+                merged[key] = dict(value)
+        return merged
+
+    @staticmethod
+    def _apply_effects(state: dict, effects: list[Effect]) -> dict:
+        attrs = dict(state)
+        for eff in effects:
+            attrs = eff.apply(attrs)
+        return attrs
+
+    @staticmethod
+    def _conditions_ok(conditions: list[Condition], state: dict) -> bool:
+        return all(cond.check(state) for cond in conditions)
+
+    def _station_items(self):
+        return [i for i in self.items() if isinstance(i, StationItem)]
+
+    def _attribute_items(self):
+        return [i for i in self.items() if isinstance(i, AttributeItem)]
+
+    def _all_attribute_names(self) -> list[str]:
+        names = []
+        seen = set()
+        for item in self._attribute_items():
+            name = (item.attribute_name or "").strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    def _connected_attribute_names(self, station: StationItem) -> list[str]:
+        names = []
+        seen = set()
+        for conn in station.attr_port.connections:
+            if conn.src_port and isinstance(conn.src_port.parentItem(), AttributeItem):
+                name = (conn.src_port.parentItem().attribute_name or "").strip()
+                if name and name not in seen:
+                    names.append(name)
+                    seen.add(name)
+        return names
+
+    def _rename_attribute_references(self, old_name: str, new_name: str) -> dict:
+        old_key = (old_name or "").strip()
+        new_key = (new_name or "").strip()
+        if not old_key or not new_key or old_key == new_key:
+            return {"conditions": 0, "effects": 0, "connections": 0}
+
+        updates = {"conditions": 0, "effects": 0, "connections": 0}
+        for station in self._station_items():
+            changed = False
+            for cond in station.conditions:
+                if (cond.attribute or "").strip() == old_key:
+                    cond.attribute = new_key
+                    changed = True
+                    updates["conditions"] += 1
+            for eff in station.effects:
+                if (eff.attribute or "").strip() == old_key:
+                    eff.attribute = new_key
+                    changed = True
+                    updates["effects"] += 1
+            if changed:
+                station.update()
+                self._refresh_template(station)
+
+        for conn in self._connections:
+            changed = False
+            for cond in conn.conditions:
+                if (cond.attribute or "").strip() == old_key:
+                    cond.attribute = new_key
+                    changed = True
+                    updates["connections"] += 1
+            if changed:
+                conn.update()
+        return updates
+
+    def _connection_kind(self, conn: ConnectionItem):
+        if not conn.src_port or not conn.dst_port:
+            return None
+        src = conn.src_port.parentItem()
+        dst = conn.dst_port.parentItem()
+        if isinstance(src, StationItem) and isinstance(dst, StationItem):
+            if conn.src_port.port_type == Port.OUTPUT and conn.dst_port.port_type == Port.INPUT:
+                return "flow"
+        if isinstance(src, AttributeItem) and isinstance(dst, StationItem):
+            if conn.src_port.port_type == Port.ATTR_OUTPUT and conn.dst_port.port_type == Port.ATTR_INPUT:
+                return "attribute"
+        return None
+
+    def _can_connect(self, src_port: Port, dst_port: Port) -> bool:
+        if src_port is None or dst_port is None:
+            return False
+        if not src_port.is_output() or not dst_port.is_input():
+            return False
+        if src_port == dst_port:
+            return False
+        src_item = src_port.parentItem()
+        dst_item = dst_port.parentItem()
+        if isinstance(src_item, StationItem) and isinstance(dst_item, StationItem):
+            return src_port.port_type == Port.OUTPUT and dst_port.port_type == Port.INPUT
+        if isinstance(src_item, AttributeItem) and isinstance(dst_item, StationItem):
+            return src_port.port_type == Port.ATTR_OUTPUT and dst_port.port_type == Port.ATTR_INPUT
+        return False
+
+    def _resolve_drop_target(self, src_port: Port, item:ConnectionItem):
+        if isinstance(item, Port):
+            return item if self._can_connect(src_port, item) else None
+        if isinstance(item, StationItem):
+            if isinstance(src_port.parentItem(), AttributeItem):
+                return item.attr_port if self._can_connect(src_port, item.attr_port) else None
+            return item.in_port if self._can_connect(src_port, item.in_port) else None
+        return None
 
     # ── Maus-Interaktion ─────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.scenePos(), QTransform())
-            if isinstance(item, Port) and item.port_type == Port.OUTPUT:
+            if isinstance(item, Port) and item.is_output():
                 # Neue Verbindung beginnen
                 self._wip_src  = item
                 conn = ConnectionItem(item)
                 conn.set_drag_end(event.scenePos())
                 self.addItem(conn)
                 self._wip_conn = conn
-                self.status_message.emit(
-                    "Verbindung ziehen → auf grünen Eingangs-Port der Ziel-Station loslassen."
-                )
+                if item.port_type == Port.ATTR_OUTPUT:
+                    self.status_message.emit("Attributverbindung ziehen → auf den orangefarbenen Attribut-Eingang der Station loslassen.")
+                else:
+                    self.status_message.emit("Verbindung ziehen → auf den grünen Eingangs-Port der Ziel-Station loslassen.")
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -873,19 +1439,19 @@ class FlowScene(QGraphicsScene):
 
     def mouseReleaseEvent(self, event):
         if self._wip_conn:
+            self.removeItem(self._wip_conn)
             item = self.itemAt(event.scenePos(), QTransform())
-            if (isinstance(item, Port)
-                    and item.port_type == Port.INPUT
-                    and item.parentItem() is not self._wip_src.parentItem()):
+            target_port = self._resolve_drop_target(self._wip_src, item)
+            if target_port is not None:
                 # Verbindung abschließen
-                self._wip_conn.finalize(item)
+                self._wip_conn.finalize(target_port)
                 self._wip_src.connections.append(self._wip_conn)
-                item.connections.append(self._wip_conn)
+                target_port.connections.append(self._wip_conn)
                 self._connections.append(self._wip_conn)
+                self.addItem(self._wip_conn)
                 self.validate_all()
                 self.status_message.emit("Verbindung erstellt. Doppelklick auf Station zum Bearbeiten.")
             else:
-                self.removeItem(self._wip_conn)
                 self.status_message.emit("Verbindung abgebrochen.")
             self._wip_conn = None
             self._wip_src  = None
@@ -899,6 +1465,10 @@ class FlowScene(QGraphicsScene):
                 if isinstance(item, ConnectionItem):
                     self._remove_conn(item)
                 elif isinstance(item, StationItem):
+                    for c in list(item.all_connections()):
+                        self._remove_conn(c)
+                    self.removeItem(item)
+                elif isinstance(item, AttributeItem):
                     for c in list(item.all_connections()):
                         self._remove_conn(c)
                     self.removeItem(item)
@@ -918,16 +1488,19 @@ class FlowScene(QGraphicsScene):
             self._connections.remove(conn)
         self.removeItem(conn)
 
-    def update_connections_for(self, item: StationItem):
-        for c in item.all_connections():
+    def update_connections_for(self, item):
+        for c in item.all_connections() if hasattr(item, "all_connections") else []:
             c.update_path()
         self.validate_all()
 
     # ── Editoren ─────────────────────────────────────────────────────────────
 
+    def _refresh_template(self, item):
+        self._register_template(item)
+
     def open_station_editor(self, item: StationItem):
         parent = self.views()[0] if self.views() else None
-        dlg    = StationDialog(item, parent)
+        dlg    = StationDialog(item, self._connected_attribute_names(item), parent)
         if dlg.exec_() == QDialog.Accepted:
             d = dlg.result_data()
             item.station_name = d["name"]
@@ -936,6 +1509,38 @@ class FlowScene(QGraphicsScene):
             item.effects      = d["effects"]
             item._layout()
             item.update()
+            self._refresh_template(item)
+            self.validate_all()
+
+    def open_attribute_editor(self, item: AttributeItem):
+        parent = self.views()[0] if self.views() else None
+        dlg    = AttributeDialog(item, parent)
+        if dlg.exec_() == QDialog.Accepted:
+            d = dlg.result_data()
+            old_name = item.attribute_name
+            item.attribute_name  = d["name"]
+            item.attribute_count = d["count"]
+            item.color = d["color"]
+            item._layout()
+            item.update()
+            renamed = self._rename_attribute_references(old_name, item.attribute_name)
+            self._refresh_template(item)
+            self.validate_all()
+            total = renamed["conditions"] + renamed["effects"] + renamed["connections"]
+            if total > 0:
+                self.status_message.emit(
+                    "Attribut umbenannt: "
+                    f"{renamed['conditions']} Eingangsbedingung(en), "
+                    f"{renamed['effects']} Ausgangseffekt(e), "
+                    f"{renamed['connections']} Pfeilbedingung(en) aktualisiert."
+                )
+
+    def open_connection_editor(self, conn: ConnectionItem):
+        parent = self.views()[0] if self.views() else None
+        dlg    = ConnectionDialog(conn, self._all_attribute_names(), parent)
+        if dlg.exec_() == QDialog.Accepted:
+            conn.conditions = dlg.result_data()
+            conn.update()
             self.validate_all()
 
     def open_text_editor(self, item: TextBlockItem):
@@ -947,99 +1552,140 @@ class FlowScene(QGraphicsScene):
             item.update()
 
     # ── Validierung ──────────────────────────────────────────────────────────
-    # Strategie: Breitensuche von allen Startknoten (kein Eingangs-Port belegt).
-    # Jedem Station-Knoten werden alle möglichen Produktzustände (frozenset der
-    # Attribute) zugewiesen, die beim Eintreffen möglich sind.
-    # Eine Verbindung A→B ist GRÜN, wenn nach Anwendung aller Effekte von A
-    # jeder mögliche Produktzustand alle Bedingungen von B erfüllt.
-    # Ist mindestens ein Zustand ungültig → ROT.
+    # Strategie: Nur Flow-Kanten bestimmen die Reihenfolge. Attribut-Kanten
+    # liefern zusätzliche Zustände, die an der Station zusammengeführt werden.
+    # Eine Verbindung wird nur dann grün, wenn alle Bedingungen an der
+    # Verbindung, am Quellknoten und am Zielknoten für alle möglichen Zustände
+    # erfüllt sind.
 
     def validate_all(self):
-        stations: list[StationItem] = [
-            i for i in self.items() if isinstance(i, StationItem)
-        ]
+        stations = self._station_items()
         if not stations:
             return
 
-        def successors(s: StationItem):
-            res = []
-            for c in s.out_port.connections:
-                if c.dst_port and isinstance(c.dst_port.parentItem(), StationItem):
-                    res.append((c, c.dst_port.parentItem()))
-            return res
+        for conn in self._connections:
+            conn._invalid_reasons = []
 
-        def predecessors(s: StationItem):
-            res = []
-            for c in s.in_port.connections:
-                if c.src_port and isinstance(c.src_port.parentItem(), StationItem):
-                    res.append((c, c.src_port.parentItem()))
-            return res
+        flow_preds = {s: [] for s in stations}
+        flow_succs = {s: [] for s in stations}
+        attr_inputs = {s: [] for s in stations}
 
-        # Topologische Reihenfolge (Kahn)
-        in_deg = {s: len(predecessors(s)) for s in stations}
+        for conn in self._connections:
+            kind = self._connection_kind(conn)
+            if kind == "flow":
+                src = conn.src_port.parentItem()
+                dst = conn.dst_port.parentItem()
+                flow_preds[dst].append((conn, src))
+                flow_succs[src].append((conn, dst))
+            elif kind == "attribute":
+                dst = conn.dst_port.parentItem()
+                attr_inputs[dst].append(conn)
+
+        in_deg = {s: len(flow_preds[s]) for s in stations}
         queue  = deque(s for s in stations if in_deg[s] == 0)
         order  = []
         while queue:
             node = queue.popleft()
             order.append(node)
-            for _, succ in successors(node):
+            for _, succ in flow_succs[node]:
                 in_deg[succ] -= 1
                 if in_deg[succ] == 0:
                     queue.append(succ)
-        # Restknoten (Zyklen) hinten anhängen
         for s in stations:
             if s not in order:
                 order.append(s)
 
-        # Mögliche Eingangs-Zustände je Station (list[frozenset])
-        incoming: dict[StationItem, list[frozenset]] = {}
-        for s in stations:
-            incoming[s] = []
+        incoming: dict[StationItem, list[dict]] = {s: [] for s in stations}
+        outputs: dict[StationItem, list[dict]] = {s: [] for s in stations}
+        source_ok: dict[StationItem, bool] = {s: True for s in stations}
+        attr_ok: dict[StationItem, bool] = {s: True for s in stations}
 
-        # Startstationen erhalten leeres Produkt {}
         for s in stations:
-            if in_deg.get(s, len(predecessors(s))) == 0 or not predecessors(s):
-                incoming[s] = [frozenset()]
+            if in_deg.get(s, 0) == 0:
+                incoming[s] = [{}]
 
-        # Vorwärts propagieren
         for s in order:
-            states_in = incoming[s] or [frozenset()]
-            # Nach Effekten
-            states_out = []
-            for frozen in states_in:
-                attrs = dict(frozen)
-                for eff in s.effects:
-                    attrs = eff.apply(attrs)
-                states_out.append(frozenset(attrs.items()))
+            states_in = incoming[s] or [{}]
+            attached_attrs = []
+            attr_conn_ok = True
+            for conn in attr_inputs[s]:
+                src_item = conn.src_port.parentItem()
+                if not isinstance(src_item, AttributeItem):
+                    attr_conn_ok = False
+                    conn.set_state(ConnectionItem.STATE_INVALID)
+                    continue
+                attr_state = self._state_from_attribute(src_item)
+                conn_ok = self._conditions_ok(conn.conditions, attr_state)
+                conn.set_state(ConnectionItem.STATE_VALID if conn_ok else ConnectionItem.STATE_INVALID)
+                attr_conn_ok = attr_conn_ok and conn_ok
+                if conn_ok:
+                    attached_attrs.append(attr_state)
 
-            for _, succ in successors(s):
-                incoming[succ].extend(states_out)
+            combined_in = []
+            for state in states_in:
+                merged = dict(state)
+                for attr_state in attached_attrs:
+                    merged = self._merge_states(merged, attr_state)
+                combined_in.append(merged)
 
-        # Verbindungen bewerten
+            states_out = [self._apply_effects(state, s.effects) for state in combined_in]
+            incoming_states = states_out or [{}]
+            outputs[s] = incoming_states
+            source_ok[s] = self._conditions_ok(s.conditions, {}) if not combined_in else all(
+                self._conditions_ok(s.conditions, state) for state in combined_in
+            )
+            attr_ok[s] = attr_conn_ok
+
+            for _, succ in flow_succs[s]:
+                incoming[succ].extend(incoming_states)
+
         for conn in self._connections:
             if not conn.src_port or not conn.dst_port:
+                conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
                 conn.set_state(ConnectionItem.STATE_UNKNOWN)
                 continue
-            src: StationItem = conn.src_port.parentItem()
-            dst: StationItem = conn.dst_port.parentItem()
-            if not isinstance(src, StationItem) or not isinstance(dst, StationItem):
+            kind = self._connection_kind(conn)
+            src_item = conn.src_port.parentItem()
+            dst_item = conn.dst_port.parentItem()
+
+            if kind == "attribute" and isinstance(src_item, AttributeItem) and isinstance(dst_item, StationItem):
+                source_state = self._state_from_attribute(src_item)
+                ok = self._conditions_ok(conn.conditions, source_state)
+                if not ok:
+                    conn._invalid_reasons = [
+                        "Mindestens eine Bedingung am Attribut-Pfeil ist für den aktuellen Attributzustand nicht erfüllt."
+                    ]
+                conn.set_state(ConnectionItem.STATE_VALID if ok else ConnectionItem.STATE_INVALID)
+                continue
+
+            if kind != "flow" or not isinstance(src_item, StationItem) or not isinstance(dst_item, StationItem):
+                conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen (nur Station→Station oder Attribut→Station)."]
                 conn.set_state(ConnectionItem.STATE_UNKNOWN)
                 continue
 
-            states_after_src = []
-            for frozen in (incoming.get(src) or [frozenset()]):
-                attrs = dict(frozen)
-                for eff in src.effects:
-                    attrs = eff.apply(attrs)
-                states_after_src.append(attrs)
-
-            if not states_after_src:
-                states_after_src = [{}]
-
-            all_ok = all(
-                all(c.check(attrs) for c in dst.conditions)
-                for attrs in states_after_src
-            )
+            states_after_src = outputs.get(src_item) or [{}]
+            failed_conn_states = sum(1 for state in states_after_src if not self._conditions_ok(conn.conditions, state))
+            failed_dst_states = sum(1 for state in states_after_src if not self._conditions_ok(dst_item.conditions, state))
+            conn_ok = failed_conn_states == 0
+            dst_ok = failed_dst_states == 0
+            src_state_ok = source_ok.get(src_item, True)
+            src_attr_ok = attr_ok.get(src_item, True)
+            all_ok = conn_ok and dst_ok and src_state_ok and src_attr_ok
+            if not all_ok:
+                reasons = []
+                if not src_state_ok:
+                    reasons.append("Die Eingangsbedingungen der Quell-Station sind bereits vor diesem Pfeil nicht erfüllbar.")
+                if not src_attr_ok:
+                    reasons.append("Mindestens eine Attribut-Zuordnung an der Quell-Station ist ungültig.")
+                if failed_conn_states > 0:
+                    reasons.append(
+                        f"{failed_conn_states} möglicher Zustand/Zustände verletzt/ verletzen die Bedingungen direkt auf diesem Pfeil."
+                    )
+                if failed_dst_states > 0:
+                    reasons.append(
+                        f"{failed_dst_states} möglicher Zustand/Zustände erfüllt/ erfüllen die Eingangsbedingungen der Ziel-Station nicht."
+                    )
+                conn._invalid_reasons = reasons
             conn.set_state(ConnectionItem.STATE_VALID if all_ok else ConnectionItem.STATE_INVALID)
 
         self.status_message.emit(
@@ -1069,6 +1715,8 @@ class FlowView(QGraphicsView):
         self.setAcceptDrops(True)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self._is_panning = False
+        self._pan_start = QPoint()
 
     def drawBackground(self, painter: QPainter, rect):
         painter.fillRect(rect, QColor("#0F172A"))
@@ -1091,6 +1739,35 @@ class FlowView(QGraphicsView):
         f = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(f, f)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            scene_item = self.itemAt(event.pos())
+            if scene_item is None:
+                self._is_panning = True
+                self._pan_start = event.pos()
+                self.setCursor(Qt.ClosedHandCursor)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._is_panning:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._is_panning and event.button() == Qt.LeftButton:
+            self._is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
             event.acceptProposedAction()
@@ -1102,18 +1779,23 @@ class FlowView(QGraphicsView):
     def dropEvent(self, event):
         mime = event.mimeData().text()
         pos  = self.mapToScene(event.pos())
-        if mime.startswith("station:"):
-            hex_col = mime.split(":", 1)[1]
-            item = StationItem("Neue Station", QColor(hex_col))
-            item.setPos(pos - QPointF(STATION_W / 2, 40))
-            self.scene().addItem(item)
-            self.scene().clearSelection()
-            item.setSelected(True)
-            self.scene().validate_all()
+        scene = self.scene()
+        if mime.startswith("station:") or mime.startswith("attribute:"):
+            kind, template_id = mime.split(":", 1)
+            palette = getattr(scene, "palette_widget", None)
+            item = palette.clone_template(kind, template_id) if palette else None
+            if item is not None:
+                scene.addItem(item)
+                item.setPos(pos - QPointF(item.boundingRect().width() / 2, item.boundingRect().height() / 2))
+                scene.clearSelection()
+                item.setSelected(True)
+                if hasattr(scene, "_register_template"):
+                    scene._register_template(item)
+                scene.validate_all()
         elif mime == "textblock":
             item = TextBlockItem("Notiz …")
             item.setPos(pos - QPointF(90, 35))
-            self.scene().addItem(item)
+            scene.addItem(item)
         event.acceptProposedAction()
 
 
@@ -1121,26 +1803,14 @@ class FlowView(QGraphicsView):
 #  PALETTE
 # ══════════════════════════════════════════════════════════════════════════════
 
-class Palette(QWidget):
-    def __init__(self, parent=None):
+class TemplateListWidget(QListWidget):
+    def __init__(self, palette_widget, kind: str, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(200)
-        self.setStyleSheet("background: #1E293B;")
-
-        lo = QVBoxLayout(self)
-        lo.setContentsMargins(8, 12, 8, 12)
-        lo.setSpacing(6)
-
-        title = QLabel("BAUSTEINE")
-        title.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        title.setStyleSheet("color:#64748B; letter-spacing:2px;")
-        lo.addWidget(title)
-
-        # Station-Einträge
-        self.list_widget = QListWidget()
-        self.list_widget.setDragEnabled(True)
-        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.list_widget.setStyleSheet("""
+        self.palette_widget = palette_widget
+        self.kind = kind
+        self.setDragEnabled(True)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setStyleSheet("""
             QListWidget {
                 background: transparent;
                 border: none;
@@ -1158,35 +1828,81 @@ class Palette(QWidget):
             QListWidget::item:hover     { background: #334155; }
             QListWidget::item:selected  { background: #1E40AF; border-color: #3B82F6; }
         """)
-        self.list_widget.setSpacing(2)
+        self.setSpacing(2)
 
-        self._items: list[tuple[str, str | None]] = []  # (label, color_hex | None)
-        for hex_col, label in PALETTE_COLORS:
-            li = QListWidgetItem(label)
-            li.setData(Qt.UserRole, f"station:{hex_col}")
-            c = QColor(hex_col)
-            pix = QPixmap(14, 14)
+    def startDrag(self, actions):
+        item = self.currentItem()
+        if not item:
+            return
+        template_id = item.data(Qt.UserRole)
+        mime_str = f"{self.kind}:{template_id}"
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(mime_str)
+        drag.setMimeData(mime)
+
+        pix = item.icon().pixmap(130, 36)
+        if pix.isNull():
+            pix = QPixmap(130, 36)
             pix.fill(Qt.transparent)
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing)
-            p.setBrush(QBrush(c))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(1, 1, 12, 12, 3, 3)
-            p.end()
-            li.setIcon(QIcon(pix))
-            self.list_widget.addItem(li)
+        drag.setPixmap(pix)
+        drag.setHotSpot(QPoint(max(1, pix.width() // 2), max(1, pix.height() // 2)))
+        drag.exec_(Qt.CopyAction)
 
-        # Textblock
-        li_txt = QListWidgetItem("📝  Textblock")
-        li_txt.setData(Qt.UserRole, "textblock")
-        self.list_widget.addItem(li_txt)
 
-        lo.addWidget(self.list_widget)
+class Palette(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(240)
+        self.setStyleSheet("background: #1E293B;")
+        self.scene_widget = None
+        self._station_items = {}
+        self._attribute_items = {}
+        self._station_templates = {}
+        self._attribute_templates = {}
+
+        lo = QVBoxLayout(self)
+        lo.setContentsMargins(8, 12, 8, 12)
+        lo.setSpacing(8)
+
+        title = QLabel("BAUSTEINE")
+        title.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        title.setStyleSheet("color:#64748B; letter-spacing:2px;")
+        lo.addWidget(title)
+
+        station_hdr = QLabel("Stationen")
+        station_hdr.setStyleSheet("color:#94A3B8; font-size:11px; font-weight:bold;")
+        lo.addWidget(station_hdr)
+        self.station_list = TemplateListWidget(self, "station")
+        self.station_placeholder = QLabel("Noch keine Stationen angelegt")
+        self.station_placeholder.setStyleSheet("color:#64748B; padding:4px 2px;")
+        self.station_placeholder.setWordWrap(True)
+        lo.addWidget(self.station_placeholder)
+        lo.addWidget(self.station_list)
+
+        attr_hdr = QLabel("Attribute")
+        attr_hdr.setStyleSheet("color:#94A3B8; font-size:11px; font-weight:bold; margin-top:8px;")
+        lo.addWidget(attr_hdr)
+        self.attribute_list = TemplateListWidget(self, "attribute")
+        self.attribute_placeholder = QLabel("Noch keine Attribute angelegt")
+        self.attribute_placeholder.setStyleSheet("color:#64748B; padding:4px 2px;")
+        self.attribute_placeholder.setWordWrap(True)
+        lo.addWidget(self.attribute_placeholder)
+        lo.addWidget(self.attribute_list)
+
+        util_hdr = QLabel("Hilfen")
+        util_hdr.setStyleSheet("color:#94A3B8; font-size:11px; font-weight:bold; margin-top:8px;")
+        lo.addWidget(util_hdr)
+        self.util_hdr = util_hdr
+        self.textblock_btn = QPushButton("Textblock erstellen")
+        self.textblock_btn.setStyleSheet("text-align:left; padding:6px 10px;")
+        lo.addWidget(self.textblock_btn)
 
         # Hinweise
-        hints = QLabel(
-            "Drag & Drop auf die Fläche\n\n"
-            "Verbinden:\nAus-Port (blau) → Ein-Port (grün)\n\n"
+        self._default_help_text = (
+            "Neue Stationen und Attribute werden unten links gesammelt und können erneut gezogen werden.\n\n"
+            "Verbinden:\nStation-Ausgang (blau) → Station-Eingang (grün)\nAttribut-Ausgang (gelb) → Attribut-Eingang (orange)\n\n"
             "Doppelklick = bearbeiten\nEntf = löschen\n"
             "Scroll = zoom\n\n"
             "Linienfarbe:\n"
@@ -1194,54 +1910,123 @@ class Palette(QWidget):
             "🔴 mind. ein Pfad ungültig\n"
             "⚫ ungeprüft"
         )
-        hints.setFont(QFont("Segoe UI", 8))
-        hints.setStyleSheet("color:#475569; padding:6px 2px;")
-        hints.setWordWrap(True)
-        lo.addWidget(hints)
+        self.hints = QLabel(self._default_help_text)
+        self.hints.setFont(QFont("Segoe UI", 8))
+        self.hints.setStyleSheet("color:#475569; padding:6px 2px;")
+        self.hints.setWordWrap(True)
+        lo.addWidget(self.hints)
         lo.addStretch()
 
-        # Drag-Override
-        self.list_widget.startDrag = self._start_drag
+        self.station_list.itemDoubleClicked.connect(lambda item: self.add_template_to_scene("station", item.data(Qt.UserRole)))
+        self.attribute_list.itemDoubleClicked.connect(lambda item: self.add_template_to_scene("attribute", item.data(Qt.UserRole)))
 
-    def _start_drag(self, actions):
-        item = self.list_widget.currentItem()
-        if not item:
-            return
-        mime_str = item.data(Qt.UserRole)
+    def set_scene(self, scene):
+        self.scene_widget = scene
 
-        drag = QDrag(self.list_widget)
-        mime = QMimeData()
-        mime.setText(mime_str)
-        drag.setMimeData(mime)
-
+    def _make_icon(self, color: QColor, label: str) -> QIcon:
         pix = QPixmap(130, 36)
         pix.fill(Qt.transparent)
         p = QPainter(pix)
         p.setRenderHint(QPainter.Antialiasing)
-
-        if mime_str.startswith("station:"):
-            col = QColor(mime_str.split(":", 1)[1])
-            grad = QLinearGradient(0, 0, 130, 0)
-            grad.setColorAt(0, col.lighter(120))
-            grad.setColorAt(1, col)
-            p.setBrush(QBrush(grad))
-            p.setPen(QPen(col.darker(150), 1))
-            p.drawRoundedRect(1, 1, 128, 34, 8, 8)
-            p.setPen(Qt.white)
-            p.setFont(QFont("Segoe UI", 8, QFont.Bold))
-            p.drawText(QRect(0, 0, 130, 36), Qt.AlignCenter, "Station")
-        else:
-            p.setBrush(QBrush(QColor(255, 252, 220, 230)))
-            p.setPen(QPen(QColor("#D97706"), 1))
-            p.drawRoundedRect(1, 1, 128, 34, 6, 6)
-            p.setPen(QColor("#44200A"))
-            p.setFont(QFont("Segoe UI", 8))
-            p.drawText(QRect(0, 0, 130, 36), Qt.AlignCenter, "Textblock")
+        grad = QLinearGradient(0, 0, 130, 0)
+        grad.setColorAt(0, color.lighter(120))
+        grad.setColorAt(1, color)
+        p.setBrush(QBrush(grad))
+        p.setPen(QPen(color.darker(150), 1))
+        p.drawRoundedRect(1, 1, 128, 34, 8, 8)
+        p.setPen(Qt.white)
+        p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+        p.drawText(QRect(0, 0, 130, 36), Qt.AlignCenter, label)
         p.end()
+        return QIcon(pix)
 
-        drag.setPixmap(pix)
-        drag.setHotSpot(QPoint(65, 18))
-        drag.exec_(Qt.CopyAction)
+    def _sync_placeholders(self):
+        self.station_placeholder.setVisible(self.station_list.count() == 0)
+        self.station_list.setVisible(self.station_list.count() > 0)
+        self.attribute_placeholder.setVisible(self.attribute_list.count() == 0)
+        self.attribute_list.setVisible(self.attribute_list.count() > 0)
+
+    def show_default_help(self):
+        self.util_hdr.setText("Hilfen")
+        self.hints.setText(self._default_help_text)
+
+    def show_invalid_connection_help(self, conn: ConnectionItem):
+        self.util_hdr.setText("Pfeil-Analyse")
+        reasons = list(getattr(conn, "_invalid_reasons", []) or [])
+        if not reasons:
+            reasons = ["Dieser Pfeil ist ungültig, es wurde jedoch keine Detailursache gefunden."]
+        lines = ["Dieser Pfeil ist nicht korrekt, weil:", ""]
+        for idx, reason in enumerate(reasons, start=1):
+            lines.append(f"{idx}. {reason}")
+        lines.append("")
+        lines.append("Hinweis: Doppelklick auf den Pfeil öffnet den Bedingungseditor.")
+        self.hints.setText("\n".join(lines))
+
+    def reset_templates(self):
+        self.station_list.clear()
+        self.attribute_list.clear()
+        self._station_items.clear()
+        self._attribute_items.clear()
+        self._station_templates.clear()
+        self._attribute_templates.clear()
+        self._sync_placeholders()
+        self.show_default_help()
+
+    def register_item(self, item):
+        if isinstance(item, StationItem):
+            template_id = item.template_id
+            label = item.station_name
+            self._station_templates[template_id] = item.clone()
+            existing = self._station_items.get(template_id)
+            if existing is None:
+                li = QListWidgetItem(label)
+                li.setData(Qt.UserRole, template_id)
+                li.setIcon(self._make_icon(QColor(item.color), "Station"))
+                self.station_list.addItem(li)
+                self._station_items[template_id] = li
+            else:
+                existing.setText(label)
+                existing.setIcon(self._make_icon(QColor(item.color), "Station"))
+        elif isinstance(item, AttributeItem):
+            template_id = item.template_id
+            label = f"{item.attribute_name} · {item.attribute_count}"
+            self._attribute_templates[template_id] = item.clone()
+            existing = self._attribute_items.get(template_id)
+            if existing is None:
+                li = QListWidgetItem(label)
+                li.setData(Qt.UserRole, template_id)
+                li.setIcon(self._make_icon(QColor(item.color), "Attribut"))
+                self.attribute_list.addItem(li)
+                self._attribute_items[template_id] = li
+            else:
+                existing.setText(label)
+                existing.setIcon(self._make_icon(QColor(item.color), "Attribut"))
+        self._sync_placeholders()
+
+    def clone_template(self, kind: str, template_id: str):
+        if kind == "station":
+            source_item = self._station_templates.get(template_id)
+        elif kind == "attribute":
+            source_item = self._attribute_templates.get(template_id)
+        else:
+            source_item = None
+        return source_item.clone() if source_item else None
+
+    def add_template_to_scene(self, kind: str, template_id: str):
+        if self.scene_widget is None:
+            return None
+        item = self.clone_template(kind, template_id)
+        if item is None:
+            return None
+        self.scene_widget.addItem(item)
+        center = self.scene_widget.sceneRect().center()
+        br = item.boundingRect()
+        item.setPos(center - QPointF(br.width() / 2, br.height() / 2))
+        self.scene_widget.clearSelection()
+        item.setSelected(True)
+        self.scene_widget._register_template(item)
+        self.scene_widget.validate_all()
+        return item
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1299,6 +2084,7 @@ class MainWindow(QMainWindow):
 
         self.scene = FlowScene()
         self.scene.status_message.connect(self._set_status)
+        self.scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         self._build_toolbar()
         self._build_central()
@@ -1313,7 +2099,12 @@ class MainWindow(QMainWindow):
 
         for text, shortcut, slot in [
             ("Neu",             "Ctrl+N",        self._new),
+            ("Laden (JSON)",    "Ctrl+O",        self._import_json),
+            ("Speichern (JSON)","Ctrl+S",        self._export_json),
+            ("Station",         "Ctrl+1",        self._new_station),
+            ("Attribut",        "Ctrl+2",        self._new_attribute),
             ("Validieren",      "F5",            self.scene.validate_all),
+            ("Als PDF exportieren", "Ctrl+P",     self._export_pdf),
             ("Alles einpassen", "Ctrl+Shift+F",  self._fit_all),
             ("Zoom 100%",       "Ctrl+0",        self._zoom_reset),
         ]:
@@ -1338,6 +2129,7 @@ class MainWindow(QMainWindow):
         h.setSpacing(0)
 
         self.palette = Palette()
+        self.palette.set_scene(self.scene)
         h.addWidget(self.palette)
 
         sep = QFrame()
@@ -1348,6 +2140,9 @@ class MainWindow(QMainWindow):
         self.view = FlowView(self.scene)
         h.addWidget(self.view, 1)
 
+        self.scene.set_palette(self.palette)
+        self.palette.textblock_btn.clicked.connect(self._new_textblock)
+
     def _build_menu(self):
         mb = self.menuBar()
 
@@ -1355,6 +2150,15 @@ class MainWindow(QMainWindow):
         a = QAction("Neu", self, shortcut="Ctrl+N")
         a.triggered.connect(self._new)
         fm.addAction(a)
+        import_act = QAction("Laden (JSON)", self, shortcut="Ctrl+O")
+        import_act.triggered.connect(self._import_json)
+        fm.addAction(import_act)
+        export_json_act = QAction("Speichern (JSON)", self, shortcut="Ctrl+S")
+        export_json_act.triggered.connect(self._export_json)
+        fm.addAction(export_json_act)
+        export_act = QAction("Als PDF exportieren", self, shortcut="Ctrl+P")
+        export_act.triggered.connect(self._export_pdf)
+        fm.addAction(export_act)
 
         vm = mb.addMenu("Ansicht")
         for label, shortcut, slot in [
@@ -1371,6 +2175,14 @@ class MainWindow(QMainWindow):
         del_act = QAction("Ausgewählte löschen", self, shortcut="Del")
         del_act.triggered.connect(self._delete_selected)
         em.addAction(del_act)
+
+        add_station = QAction("Station anlegen", self, shortcut="Ctrl+1")
+        add_station.triggered.connect(self._new_station)
+        em.addAction(add_station)
+
+        add_attr = QAction("Attribut anlegen", self, shortcut="Ctrl+2")
+        add_attr.triggered.connect(self._new_attribute)
+        em.addAction(add_attr)
 
         val_act = QAction("Alle Verbindungen validieren", self, shortcut="F5")
         val_act.triggered.connect(self.scene.validate_all)
@@ -1396,6 +2208,35 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No
         ) == QMessageBox.Yes:
             self.scene.clear_all()
+            self.palette.reset_templates()
+
+    def _place_item_center(self, item):
+        view_center = self.view.mapToScene(self.view.viewport().rect().center())
+        br = item.boundingRect()
+        item.setPos(view_center - QPointF(br.width() / 2, br.height() / 2))
+
+    def _add_item_to_scene(self, item):
+        self.scene.addItem(item)
+        self._place_item_center(item)
+        self.scene.clearSelection()
+        item.setSelected(True)
+        self.scene._register_template(item)
+        self.scene.validate_all()
+
+    def _new_station(self):
+        item = StationItem("Neue Station")
+        self._add_item_to_scene(item)
+
+    def _new_attribute(self):
+        item = AttributeItem("Neues Attribut", 1)
+        self._add_item_to_scene(item)
+
+    def _new_textblock(self):
+        item = TextBlockItem("Notiz …")
+        self.scene.addItem(item)
+        self._place_item_center(item)
+        self.scene.clearSelection()
+        item.setSelected(True)
 
     def _fit_all(self):
         br = self.scene.itemsBoundingRect()
@@ -1408,6 +2249,516 @@ class MainWindow(QMainWindow):
     def _delete_selected(self):
         ev = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier)
         self.scene.keyPressEvent(ev)
+
+    def _choose_file(self, save: bool, title: str, default_name: str, name_filter: str):
+        start_dir = os.path.expanduser("~")
+        start_path = os.path.join(start_dir, default_name) if default_name else start_dir
+        options = QFileDialog.Options()
+
+        if save:
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                title,
+                start_path,
+                name_filter,
+                options=options,
+            )
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                title,
+                start_path,
+                name_filter,
+                options=options,
+            )
+        return path or ""
+
+    def _on_scene_selection_changed(self):
+        selected = self.scene.selectedItems()
+        invalid_conn = next(
+            (item for item in selected if isinstance(item, ConnectionItem) and item._state is ConnectionItem.STATE_INVALID),
+            None,
+        )
+        if invalid_conn is not None:
+            self.palette.show_invalid_connection_help(invalid_conn)
+        else:
+            self.palette.show_default_help()
+
+    @staticmethod
+    def _serialize_condition(cond: Condition) -> dict:
+        return {
+            "attribute": cond.attribute,
+            "subject": cond.subject,
+            "operator": cond.operator,
+            "value": cond.value,
+        }
+
+    @staticmethod
+    def _deserialize_condition(data: dict) -> Condition:
+        return Condition(
+            data.get("attribute", ""),
+            data.get("subject") or Condition.SUBJECT_VALUE,
+            data.get("operator") or Condition.OP_EXISTS,
+            data.get("value", ""),
+        )
+
+    @staticmethod
+    def _serialize_effect(eff: Effect) -> dict:
+        return {
+            "action": eff.action,
+            "attribute": eff.attribute,
+            "value": eff.value,
+        }
+
+    @staticmethod
+    def _deserialize_effect(data: dict) -> Effect:
+        return Effect(
+            data.get("action") or Effect.ACT_ADD,
+            data.get("attribute", ""),
+            data.get("value", ""),
+        )
+
+    @staticmethod
+    def _port_by_type(item, port_type: str):
+        if isinstance(item, StationItem):
+            if port_type == Port.INPUT:
+                return item.in_port
+            if port_type == Port.OUTPUT:
+                return item.out_port
+            if port_type == Port.ATTR_INPUT:
+                return item.attr_port
+        if isinstance(item, AttributeItem):
+            if port_type == Port.ATTR_OUTPUT:
+                return item.out_port
+        return None
+
+    def _export_json(self):
+        path = self._choose_file(
+            save=True,
+            title="Konfiguration speichern",
+            default_name="ablaufplan.json",
+            name_filter="JSON-Dateien (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        def _safe_int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            stations = [i for i in self.scene.items() if isinstance(i, StationItem)]
+            attributes = [i for i in self.scene.items() if isinstance(i, AttributeItem)]
+            textblocks = [i for i in self.scene.items() if isinstance(i, TextBlockItem)]
+
+            data = {
+                "version": 1,
+                "stations": [
+                    {
+                        "node_id": s.node_id,
+                        "template_id": s.template_id,
+                        "name": s.station_name,
+                        "color": QColor(s.color).name(),
+                        "x": float(s.pos().x()),
+                        "y": float(s.pos().y()),
+                        "conditions": [self._serialize_condition(c) for c in s.conditions],
+                        "effects": [self._serialize_effect(e) for e in s.effects],
+                    }
+                    for s in stations
+                ],
+                "attributes": [
+                    {
+                        "node_id": a.node_id,
+                        "template_id": a.template_id,
+                        "name": a.attribute_name,
+                        "count": max(0, _safe_int(getattr(a, "attribute_count", 0), 0)),
+                        "color": QColor(a.color).name(),
+                        "x": float(a.pos().x()),
+                        "y": float(a.pos().y()),
+                    }
+                    for a in attributes
+                ],
+                "textblocks": [
+                    {
+                        "node_id": t.node_id,
+                        "text": t._text,
+                        "x": float(t.pos().x()),
+                        "y": float(t.pos().y()),
+                    }
+                    for t in textblocks
+                ],
+                "connections": [
+                    {
+                        "src_node_id": getattr(c.src_port.parentItem(), "node_id", None),
+                        "src_port_type": c.src_port.port_type if c.src_port else None,
+                        "dst_node_id": getattr(c.dst_port.parentItem(), "node_id", None),
+                        "dst_port_type": c.dst_port.port_type if c.dst_port else None,
+                        "conditions": [self._serialize_condition(cond) for cond in c.conditions],
+                    }
+                    for c in self.scene._connections
+                    if c.src_port and c.dst_port
+                ],
+            }
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            QMessageBox.critical(self, "Speichern fehlgeschlagen", f"JSON konnte nicht gespeichert werden:\n{exc}")
+            return
+        self.statusBar().showMessage(f"JSON gespeichert: {path}")
+
+    def _import_json(self):
+        path = self._choose_file(
+            save=False,
+            title="Konfiguration laden",
+            default_name="",
+            name_filter="JSON-Dateien (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            QMessageBox.critical(self, "Laden fehlgeschlagen", f"JSON konnte nicht geladen werden:\n{exc}")
+            return
+
+        self.scene.clear_all()
+        self.palette.reset_templates()
+
+        node_map = {}
+
+        for s in data.get("stations", []):
+            item = StationItem(s.get("name", "Station"), QColor(s.get("color", "#2563EB")))
+            item.node_id = s.get("node_id") or item.node_id
+            item.template_id = s.get("template_id") or item.template_id
+            item.conditions = [self._deserialize_condition(c) for c in s.get("conditions", [])]
+            item.effects = [self._deserialize_effect(e) for e in s.get("effects", [])]
+            item._layout()
+            item.setPos(float(s.get("x", 0.0)), float(s.get("y", 0.0)))
+            self.scene.addItem(item)
+            self.scene._register_template(item)
+            node_map[item.node_id] = item
+
+        for a in data.get("attributes", []):
+            item = AttributeItem(
+                a.get("name", "Attribut"),
+                int(a.get("count", 1) or 1),
+                QColor(a.get("color", "#F59E0B")),
+            )
+            item.node_id = a.get("node_id") or item.node_id
+            item.template_id = a.get("template_id") or item.template_id
+            item._layout()
+            item.setPos(float(a.get("x", 0.0)), float(a.get("y", 0.0)))
+            self.scene.addItem(item)
+            self.scene._register_template(item)
+            node_map[item.node_id] = item
+
+        for t in data.get("textblocks", []):
+            item = TextBlockItem(t.get("text", ""))
+            item.node_id = t.get("node_id") or item.node_id
+            item._recalc_height()
+            item.setPos(float(t.get("x", 0.0)), float(t.get("y", 0.0)))
+            self.scene.addItem(item)
+            node_map[item.node_id] = item
+
+        for c in data.get("connections", []):
+            src_item = node_map.get(c.get("src_node_id"))
+            dst_item = node_map.get(c.get("dst_node_id"))
+            if src_item is None or dst_item is None:
+                continue
+            src_port = self._port_by_type(src_item, c.get("src_port_type"))
+            dst_port = self._port_by_type(dst_item, c.get("dst_port_type"))
+            if src_port is None or dst_port is None:
+                continue
+            conn = ConnectionItem(src_port)
+            conn.conditions = [self._deserialize_condition(cond) for cond in c.get("conditions", [])]
+            conn.finalize(dst_port)
+            src_port.connections.append(conn)
+            dst_port.connections.append(conn)
+            self.scene._connections.append(conn)
+            self.scene.addItem(conn)
+
+        self.scene.validate_all()
+        self.statusBar().showMessage(f"JSON geladen: {path}")
+
+    def _export_pdf(self):
+        path = self._choose_file(
+            save=True,
+            title="Als PDF exportieren",
+            default_name="ablaufplan.pdf",
+            name_filter="PDF-Dateien (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(path)
+        printer.setPageSize(QPrinter.A4)
+        printer.setOrientation(QPrinter.Landscape)
+
+        painter = QPainter(printer)
+        if not painter.isActive():
+            return
+
+        try:
+            self._paint_pdf_editor_page(painter, printer)
+            printer.newPage()
+            self._paint_pdf_flow_page(painter, printer)
+            printer.newPage()
+            self._paint_pdf_clean_flow_page(painter, printer)
+        finally:
+            painter.end()
+        self.statusBar().showMessage(f"PDF exportiert: {path}")
+
+    def _paint_pdf_editor_page(self, painter: QPainter, printer: QPrinter):
+        page_rect = printer.pageRect(QPrinter.DevicePixel)
+        painter.fillRect(page_rect, QColor("#0F172A"))
+        painter.setPen(QColor("#E2E8F0"))
+        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        painter.drawText(QRectF(40, 20, page_rect.width() - 80, 30), Qt.AlignLeft, "Editoransicht")
+        source = self.scene.itemsBoundingRect().adjusted(-80, -80, 80, 80)
+        if source.isEmpty():
+            source = self.scene.sceneRect().adjusted(0, 0, -1, -1)
+        target = QRectF(30, 60, page_rect.width() - 60, page_rect.height() - 90)
+        self.scene.render(painter, target, source)
+
+    def _paint_pdf_flow_page(self, painter: QPainter, printer: QPrinter):
+        page_rect = printer.pageRect(QPrinter.DevicePixel)
+        painter.fillRect(page_rect, QColor("#0F172A"))
+        painter.setPen(QColor("#E2E8F0"))
+        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        painter.drawText(QRectF(40, 20, page_rect.width() - 80, 30), Qt.AlignLeft, "Ablaufdiagramm")
+
+        stations = [item for item in self.scene.items() if isinstance(item, StationItem)]
+        if not stations:
+            painter.setFont(QFont("Segoe UI", 10))
+            painter.drawText(QRectF(40, 70, page_rect.width() - 80, 40), Qt.AlignLeft, "Keine Stationen vorhanden.")
+            return
+
+        flow_edges = []
+        preds = {station: [] for station in stations}
+        succs = {station: [] for station in stations}
+        for conn in self.scene._connections:
+            if self.scene._connection_kind(conn) != "flow":
+                continue
+            src = conn.src_port.parentItem()
+            dst = conn.dst_port.parentItem()
+            if isinstance(src, StationItem) and isinstance(dst, StationItem):
+                flow_edges.append(conn)
+                preds[dst].append(src)
+                succs[src].append(dst)
+
+        in_deg = {station: len(preds[station]) for station in stations}
+        queue = deque(station for station in stations if in_deg[station] == 0)
+        order = []
+        while queue:
+            node = queue.popleft()
+            order.append(node)
+            for succ in succs[node]:
+                in_deg[succ] -= 1
+                if in_deg[succ] == 0:
+                    queue.append(succ)
+        for station in stations:
+            if station not in order:
+                order.append(station)
+
+        left = 60
+        right = page_rect.width() - 60
+        top = 90
+        available_width = max(200, right - left)
+        step = available_width / max(1, len(order))
+        node_w = min(170, max(120, step - 28))
+        node_h = 74
+        y = page_rect.height() / 2 - node_h / 2 + 20
+        positions = {}
+        for index, station in enumerate(order):
+            x = left + index * step + (step - node_w) / 2
+            positions[station] = QRectF(x, y, node_w, node_h)
+
+        painter.setRenderHint(QPainter.Antialiasing)
+        for conn in flow_edges:
+            src = conn.src_port.parentItem()
+            dst = conn.dst_port.parentItem()
+            if src not in positions or dst not in positions:
+                continue
+            src_rect = positions[src]
+            dst_rect = positions[dst]
+            start = QPointF(src_rect.right(), src_rect.center().y())
+            end = QPointF(dst_rect.left(), dst_rect.center().y())
+            dx = max(80, (end.x() - start.x()) * 0.45)
+            path = QPainterPath(start)
+            path.cubicTo(QPointF(start.x() + dx, start.y()), QPointF(end.x() - dx, end.y()), end)
+            pen = QPen(conn.pen().color() if conn.pen().color().isValid() else QColor("#94A3B8"), 2.3)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+            arrow_end = path.pointAtPercent(1.0)
+            arrow_prev = path.pointAtPercent(0.97)
+            angle = math.atan2(-(arrow_end.y() - arrow_prev.y()), arrow_end.x() - arrow_prev.x())
+            arr_sz = 9
+            a1 = angle + math.radians(150)
+            a2 = angle - math.radians(150)
+            arrow = QPolygonF([
+                arrow_end,
+                QPointF(arrow_end.x() + arr_sz * math.cos(a1), arrow_end.y() - arr_sz * math.sin(a1)),
+                QPointF(arrow_end.x() + arr_sz * math.cos(a2), arrow_end.y() - arr_sz * math.sin(a2)),
+            ])
+            painter.setBrush(QBrush(pen.color()))
+            painter.setPen(Qt.NoPen)
+            painter.drawPolygon(arrow)
+            if conn.conditions:
+                mid = path.pointAtPercent(0.5)
+                label = f"{len(conn.conditions)} Bedingung(en)"
+                fm = QFontMetrics(QFont("Segoe UI", 8))
+                bounds = fm.boundingRect(label)
+                box = QRectF(mid.x() - bounds.width() / 2 - 6, mid.y() - 14, bounds.width() + 12, 18)
+                painter.setPen(QPen(QColor("#E2E8F0"), 1))
+                painter.setBrush(QBrush(QColor(15, 23, 42, 220)))
+                painter.drawRoundedRect(box, 5, 5)
+                painter.drawText(box, Qt.AlignCenter, label)
+
+        for station, rect in positions.items():
+            c = QColor(station.color)
+            body = QPainterPath()
+            body.addRoundedRect(rect, 10, 10)
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0.0, c.lighter(135))
+            grad.setColorAt(1.0, c.darker(120))
+            painter.setBrush(QBrush(grad))
+            painter.setPen(QPen(c.darker(160), 1.2))
+            painter.drawPath(body)
+            painter.setPen(QColor(255, 255, 255, 242))
+            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 8, rect.width() - 16, 18), Qt.AlignLeft, station.station_name)
+            painter.setFont(QFont("Consolas", 8))
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 28, rect.width() - 16, 14), Qt.AlignLeft, f"Bedingungen: {len(station.conditions)}")
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 42, rect.width() - 16, 14), Qt.AlignLeft, f"Effekte: {len(station.effects)}")
+
+    def _paint_pdf_clean_flow_page(self, painter: QPainter, printer: QPrinter):
+        page_rect = printer.pageRect(QPrinter.DevicePixel)
+        painter.fillRect(page_rect, QColor("#FFFFFF"))
+        painter.setPen(QColor("#111827"))
+        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        painter.drawText(QRectF(36, 18, page_rect.width() - 72, 28), Qt.AlignLeft, "Aufgeraeumtes Ablaufdiagramm")
+
+        stations = [item for item in self.scene.items() if isinstance(item, StationItem)]
+        if not stations:
+            painter.setFont(QFont("Segoe UI", 10))
+            painter.drawText(QRectF(36, 60, page_rect.width() - 72, 24), Qt.AlignLeft, "Keine Stationen vorhanden.")
+            return
+
+        succs = {station: [] for station in stations}
+        preds = {station: [] for station in stations}
+        for conn in self.scene._connections:
+            if self.scene._connection_kind(conn) != "flow":
+                continue
+            src = conn.src_port.parentItem()
+            dst = conn.dst_port.parentItem()
+            if isinstance(src, StationItem) and isinstance(dst, StationItem):
+                succs[src].append((dst, conn))
+                preds[dst].append((src, conn))
+
+        indeg = {station: len(preds[station]) for station in stations}
+        queue = deque(station for station in stations if indeg[station] == 0)
+        order = []
+        while queue:
+            node = queue.popleft()
+            order.append(node)
+            for succ, _ in succs[node]:
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    queue.append(succ)
+        for station in stations:
+            if station not in order:
+                order.append(station)
+
+        level = {station: 0 for station in stations}
+        for node in order:
+            for succ, _ in succs[node]:
+                level[succ] = max(level[succ], level[node] + 1)
+
+        layers = {}
+        for station in order:
+            layers.setdefault(level[station], []).append(station)
+
+        left = 48
+        top = 72
+        right = page_rect.width() - 48
+        bottom = page_rect.height() - 44
+        layer_count = max(1, len(layers))
+        col_w = (right - left) / layer_count
+        box_w = min(170, col_w - 24)
+        box_h = 52
+
+        positions = {}
+        for lv in sorted(layers.keys()):
+            nodes = layers[lv]
+            step_y = (bottom - top) / (len(nodes) + 1)
+            x = left + lv * col_w + (col_w - box_w) / 2
+            for idx, node in enumerate(nodes, start=1):
+                y = top + idx * step_y - box_h / 2
+                positions[node] = QRectF(x, y, box_w, box_h)
+
+        painter.setRenderHint(QPainter.Antialiasing)
+        # Kanten zuerst
+        for src in order:
+            for dst, conn in succs[src]:
+                if src not in positions or dst not in positions:
+                    continue
+                r1 = positions[src]
+                r2 = positions[dst]
+                start = QPointF(r1.right(), r1.center().y())
+                end = QPointF(r2.left(), r2.center().y())
+                mid_x = (start.x() + end.x()) / 2
+                path = QPainterPath(start)
+                path.lineTo(mid_x, start.y())
+                path.lineTo(mid_x, end.y())
+                path.lineTo(end)
+                color = QColor("#16A34A") if conn._state is ConnectionItem.STATE_VALID else (
+                    QColor("#DC2626") if conn._state is ConnectionItem.STATE_INVALID else QColor("#64748B")
+                )
+                pen = QPen(color, 1.8)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+
+                arrow = QPolygonF([
+                    QPointF(end.x(), end.y()),
+                    QPointF(end.x() - 7, end.y() - 4),
+                    QPointF(end.x() - 7, end.y() + 4),
+                ])
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawPolygon(arrow)
+
+        # Knoten
+        for node, rect in positions.items():
+            color = QColor(node.color)
+            painter.setPen(QPen(color.darker(160), 1.0))
+            painter.setBrush(QBrush(color.lighter(145)))
+            painter.drawRoundedRect(rect, 8, 8)
+            painter.setPen(QColor("#111827"))
+            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            painter.drawText(QRectF(rect.left() + 8, rect.top() + 7, rect.width() - 16, 18), Qt.AlignLeft, node.station_name)
+            painter.setFont(QFont("Segoe UI", 7))
+            painter.drawText(
+                QRectF(rect.left() + 8, rect.top() + 26, rect.width() - 16, 16),
+                Qt.AlignLeft,
+                f"B:{len(node.conditions)}  E:{len(node.effects)}",
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
