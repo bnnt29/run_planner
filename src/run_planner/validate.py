@@ -743,22 +743,33 @@ class FlowScene(QGraphicsScene):
                     f"Die {station_name} Regel hat das Traversierungs-Limit ({max_traversals}) seit dem letzten Checkpoint erreicht."
                 )
             return state, reasons, blocked_limit, key
-
-        def collect_connection_states(allow_conditional: bool):
-            conn_states = {conn_key: [] for conn_key in target_conn_keys}
-
+        
+        def collect_states (allow_conditional: bool):
+            conn_states_valid = {conn_key: [] for conn_key in target_conn_keys}
+            conn_states_conditional_valid = {conn_key: [] for conn_key in target_conn_keys}
+            checkpoint_levels = {sid: set() for sid in target_checkpoint_ids}
+            
             def traversal_key(state: dict, active_rule_counts: dict[str, int]):
                 state_part = tuple(sorted((attr_id, state.get(attr_id)) for attr_id in state.keys()))
                 rules_part = tuple(sorted(active_rule_counts.items()))
                 return state_part, rules_part
-
+            
+            def state_level(state: CONNECTION_STATE) -> int:
+                if state == CONNECTION_STATE.VALID:
+                    return 0
+                if state == CONNECTION_STATE.CONDITIONAL_VALID:
+                    return 1
+                return 2
+            
             def dfs(
                 station_id: str,
                 incoming_state: dict,
                 depth_left: int,
+                level: int,
                 reached_checkpoint: bool,
                 active_rule_counts: dict[str, int],
                 cache: set,
+                conn_state_con_val:bool = False,
             ):
                 at_checkpoint = reached_checkpoint or (station_id in checkpoint_ids)
                 segment_rule_counts = {} if station_id in checkpoint_ids else active_rule_counts
@@ -785,13 +796,28 @@ class FlowScene(QGraphicsScene):
                             incoming_state,
                             segment_rule_counts,
                         )
-                        if conn_key in conn_states:
-                            conn_states[conn_key].append((transition_state, reasons))
-                        if transition_state == CONNECTION_STATE.VALID or (
-                            allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID
-                        ):
-                            dfs(succ_id, incoming_state, depth_left - 1, at_checkpoint, segment_rule_counts, cache)
-                        continue
+                        state_cont = False
+                        next_level = level
+                        if transition_state in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
+                            next_level = max(level, state_level(transition_state))
+                            if succ_id in checkpoint_levels:
+                                checkpoint_levels[succ_id].add(next_level)
+                            state_cont = True
+                        if conn_state_con_val:
+                            if conn_key in conn_states_conditional_valid:
+                                conn_states_conditional_valid[conn_key].append((transition_state, reasons))
+                        else:
+                            if conn_key in conn_states_valid:
+                                conn_states_valid[conn_key].append((transition_state, reasons))
+                        if transition_state == CONNECTION_STATE.VALID and not conn_state_con_val:
+                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache)
+                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID and not conn_state_con_val:
+                            conn_states_conditional_valid = conn_states_valid
+                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache, True)
+                        elif conn_state_con_val:
+                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache, True)
+                        elif state_cont:
+                            dfs(succ_id, incoming_state, depth_left - 1, next_level, reached_checkpoint, segment_rule_counts, cache)
 
                     for rule in rules:
                         transition_state, reasons, blocked_limit, key = transition_for(
@@ -802,107 +828,44 @@ class FlowScene(QGraphicsScene):
                             incoming_state,
                             segment_rule_counts,
                         )
-                        if conn_key in conn_states:
-                            conn_states[conn_key].append((transition_state, reasons))
-                        if transition_state == CONNECTION_STATE.VALID or (
-                            allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID
-                        ):
+                        state_cont = False
+                        next_level = level
+                        if conn_state_con_val:
+                            if conn_key in conn_states_conditional_valid:
+                                conn_states_conditional_valid[conn_key].append((transition_state, reasons))
+                        else:
+                            if conn_key in conn_states_valid:
+                                conn_states_valid[conn_key].append((transition_state, reasons))
+                        if transition_state in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
+                            next_level = max(level, state_level(transition_state))
+                            if succ_id in checkpoint_levels:
+                                checkpoint_levels[succ_id].add(next_level)
+                            state_cont = True                            
+                        if transition_state == CONNECTION_STATE.VALID and not conn_state_con_val:
                             current_state = apply_station_rule(rule, incoming_state)
                             next_rule_counts = dict(segment_rule_counts)
                             if key and not blocked_limit:
                                 next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                            dfs(succ_id, current_state, depth_left - 1, at_checkpoint, next_rule_counts, cache)
-
-            for depth in range(1, max_depth + 1):
-                if cancel_event.is_set():
-                    return None
-                if depth % max(1, max_depth // 10) == 0:
-                    phase_base = 0 if not allow_conditional else 34
-                    phase_progress = int(depth * 33 / max_depth)
-                    self.status_message.emit(f"Validierung läuft ... {min(67, phase_base + phase_progress)}%")
-                for root_id in root_ids:
-                    if not station_data.get(root_id).get("rules", []):
-                        dfs(root_id, {}, depth, False, {}, set())
-                    for rule in station_data.get(root_id).get("rules", []):
-                        current_state = apply_station_rule(rule, {})
-                        dfs(root_id, current_state, depth, False, {}, set())
-            return conn_states
-
-        def collect_checkpoint_levels():
-            checkpoint_levels = {sid: set() for sid in target_checkpoint_ids}
-
-            def traversal_key(state: dict, active_rule_counts: dict[str, int]):
-                state_part = tuple(sorted((attr_id, state.get(attr_id)) for attr_id in state.keys()))
-                rules_part = tuple(sorted(active_rule_counts.items()))
-                return state_part, rules_part
-
-            def state_level(state: CONNECTION_STATE) -> int:
-                if state == CONNECTION_STATE.VALID:
-                    return 0
-                if state == CONNECTION_STATE.CONDITIONAL_VALID:
-                    return 1
-                return 2
-
-            def dfs(
-                station_id: str,
-                incoming_state: dict,
-                depth_left: int,
-                level: int,
-                active_rule_counts: dict[str, int],
-                cache: set,
-            ):
-                segment_rule_counts = {} if station_id in checkpoint_ids else active_rule_counts
-                cache_key = (station_id, depth_left, level, traversal_key(incoming_state, segment_rule_counts))
-                if cache_key in cache:
-                    return
-                cache.add(cache_key)
-
-                if depth_left <= 0:
-                    return
-
-                for conn_key, succ_id in flow_succs.get(station_id, []):
-                    succ = station_data.get(succ_id)
-                    if succ is None:
-                        continue
-
-                    rules = succ.get("rules", [])
-                    if not rules:
-                        transition_state, _, _, _ = transition_for(
-                            conn_key,
-                            succ_id,
-                            succ["name"],
-                            {},
-                            incoming_state,
-                            segment_rule_counts,
-                        )
-                        if transition_state not in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
-                            continue
-                        next_level = max(level, state_level(transition_state))
-                        if succ_id in checkpoint_levels:
-                            checkpoint_levels[succ_id].add(next_level)
-                        dfs(succ_id, incoming_state, depth_left - 1, next_level, segment_rule_counts, cache)
-                        continue
-
-                    for rule in rules:
-                        transition_state, _, blocked_limit, key = transition_for(
-                            conn_key,
-                            succ_id,
-                            succ["name"],
-                            rule,
-                            incoming_state,
-                            segment_rule_counts,
-                        )
-                        if transition_state not in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
-                            continue
-                        next_level = max(level, state_level(transition_state))
-                        if succ_id in checkpoint_levels:
-                            checkpoint_levels[succ_id].add(next_level)
-                        current_state = apply_station_rule(rule, incoming_state)
-                        next_rule_counts = dict(segment_rule_counts)
-                        if key and not blocked_limit:
-                            next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                        dfs(succ_id, current_state, depth_left - 1, next_level, next_rule_counts, cache)
-
+                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache)
+                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID and not conn_state_con_val:
+                            conn_states_conditional_valid = conn_states_valid
+                            current_state = apply_station_rule(rule, incoming_state)
+                            next_rule_counts = dict(segment_rule_counts)
+                            if key and not blocked_limit:
+                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
+                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache, True)
+                        elif conn_state_con_val:
+                            current_state = apply_station_rule(rule, incoming_state)
+                            next_rule_counts = dict(segment_rule_counts)
+                            if key and not blocked_limit:
+                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
+                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache, True)
+                        elif state_cont:
+                            current_state = apply_station_rule(rule, incoming_state)
+                            next_rule_counts = dict(segment_rule_counts)
+                            if key and not blocked_limit:
+                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
+                            dfs(succ_id, current_state, depth_left - 1, next_level, reached_checkpoint, next_rule_counts, cache)
             for depth in range(1, max_depth + 1):
                 if cancel_event.is_set():
                     return None
@@ -910,13 +873,12 @@ class FlowScene(QGraphicsScene):
                     self.status_message.emit(f"Validierung läuft ... {67 + int(depth * 32 / max_depth)}%")
                 for root_id in root_ids:
                     if not station_data.get(root_id).get("rules", []):
-                        dfs(root_id, {}, depth, False, {}, set())
+                        dfs(root_id, {}, depth, False, False, {}, set())
                     for rule in station_data.get(root_id).get("rules", []):
                         current_state = apply_station_rule(rule, {})
-                        dfs(root_id, current_state, depth, False, {}, set())
-            return checkpoint_levels
-
-        strict_states = collect_connection_states(False)
+                        dfs(root_id, current_state, depth, False, False, {}, set())
+            return checkpoint_levels, conn_states_valid, conn_states_conditional_valid
+        checkpoint_levels, strict_states, fallback_states = collect_states(True)
         if strict_states is None:
             return {
                 "cancelled": True,
@@ -929,7 +891,6 @@ class FlowScene(QGraphicsScene):
                     "total_checkpoints": len(checkpoint_ids),
                 },
             }
-        fallback_states = collect_connection_states(True)
         if fallback_states is None:
             return {
                 "cancelled": True,
@@ -942,7 +903,6 @@ class FlowScene(QGraphicsScene):
                     "total_checkpoints": len(checkpoint_ids),
                 },
             }
-        checkpoint_levels = collect_checkpoint_levels()
         if checkpoint_levels is None:
             return {
                 "cancelled": True,
