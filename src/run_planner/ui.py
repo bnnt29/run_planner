@@ -1673,6 +1673,16 @@ QToolBar QToolButton {
 }
 QToolBar QToolButton:hover  { background: #334155; }
 QToolBar QToolButton:pressed { background: #1E40AF; }
+QToolBar QToolButton#validation_btn[validationBusy="true"] {
+    background: #7C2D12;
+    border-color: #EA580C;
+    color: #FDBA74;
+}
+QToolBar QToolButton#validation_btn[validationBusy="true"]:disabled {
+    background: #7C2D12;
+    border-color: #EA580C;
+    color: #FDBA74;
+}
 QStatusBar {
     background: #1E293B;
     color: #64748B;
@@ -1697,6 +1707,11 @@ class MainWindow(QMainWindow):
 
         self.scene = FlowScene()
         self._auto_validation_actions = []
+        self._validation_actions = []
+        self._validation_toolbar_action = None
+        self._validation_toolbar_button = None
+        self._validation_running = False
+        self._validation_pending = False
         self._validation_debug_actions = []
         self._validation_debug_enabled = False
         self._validation_debug_label = None
@@ -1706,12 +1721,14 @@ class MainWindow(QMainWindow):
         self._show_attribute_connections = True
         self.scene.status_message.connect(self._set_status)
         self.scene.validation_debug.connect(self._set_validation_debug)
+        self.scene.validation_state_changed.connect(self._set_validation_action_state)
         self.scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         self._build_toolbar()
         self._build_central()
         self._build_menu()
         self._build_statusbar()
+        self._set_validation_action_state(False, False)
         self._create_start_configuration()
 
     # ── UI-Aufbau ─────────────────────────────────────────────────────────────
@@ -1719,6 +1736,7 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = self.addToolBar("Werkzeuge")
         tb.setMovable(False)
+        validation_action = None
 
         for text, shortcut, slot in [
             ("Neu",             "Ctrl+N",        self._new),
@@ -1726,7 +1744,7 @@ class MainWindow(QMainWindow):
             ("Speichern (JSON)","Ctrl+S",        self._export_json),
             ("Station",         "Ctrl+1",        self._new_station),
             ("Attribut",        "Ctrl+2",        self._new_attribute),
-            ("Validieren",      "F5",            lambda: self.scene.validate_all(force=True)),
+            ("Validieren",      "F5",            self._trigger_validation),
             ("Als PDF exportieren", "Ctrl+P",     self._export_pdf),
             ("Alles einpassen", "Ctrl+Shift+F",  self._fit_all),
             ("Zoom 100%",       "Ctrl+0",        self._zoom_reset),
@@ -1735,6 +1753,19 @@ class MainWindow(QMainWindow):
             btn.setShortcut(shortcut)
             btn.triggered.connect(slot)
             tb.addAction(btn)
+            if text == "Validieren":
+                validation_action = btn
+
+        self._validation_toolbar_action = validation_action
+        if validation_action is not None:
+            self._validation_actions.append(validation_action)
+            self._validation_toolbar_button = tb.widgetForAction(validation_action)
+            if self._validation_toolbar_button is not None:
+                self._validation_toolbar_button.setObjectName("validation_btn")
+                self._validation_toolbar_button.setProperty("validationBusy", False)
+                self._validation_toolbar_button.style().unpolish(self._validation_toolbar_button)
+                self._validation_toolbar_button.style().polish(self._validation_toolbar_button)
+                self._validation_toolbar_button.update()
 
         tb.addSeparator()
         auto_validate_switch = QCheckBox("Auto-Validierung")
@@ -1913,8 +1944,9 @@ class MainWindow(QMainWindow):
         em.addAction(add_attr)
 
         val_act = QAction("Alle Verbindungen validieren", self, shortcut="F5")
-        val_act.triggered.connect(lambda: self.scene.validate_all(force=True))
+        val_act.triggered.connect(self._trigger_validation)
         em.addAction(val_act)
+        self._validation_actions.append(val_act)
 
         em.addSeparator()
         
@@ -1992,6 +2024,29 @@ class MainWindow(QMainWindow):
         if self._validation_debug_label is None or not self._validation_debug_enabled:
             return
         self._validation_debug_label.setText(msg)
+
+    def _trigger_validation(self):
+        if self._validation_running or self._validation_pending:
+            self.scene.cancel_validation()
+            return
+        self.scene.validate_all(force=True)
+
+    def _set_validation_action_state(self, running: bool, pending: bool):
+        self._validation_running = running
+        self._validation_pending = pending
+        busy = running or pending
+
+        if self._validation_toolbar_button is not None:
+            self._validation_toolbar_button.setProperty("validationBusy", busy)
+            self._validation_toolbar_button.style().unpolish(self._validation_toolbar_button)
+            self._validation_toolbar_button.style().polish(self._validation_toolbar_button)
+            self._validation_toolbar_button.update()
+
+        if busy:
+            self.statusBar().showMessage(
+                "Validierung läuft ..." if running else "Validierung ist eingeplant ..."
+            )
+
     def _set_show_connection_hitboxes(self, enabled: bool):
         self._show_connection_hitboxes = enabled
         self.scene.show_connection_hitboxes = enabled
@@ -2140,6 +2195,13 @@ class MainWindow(QMainWindow):
             (item for item in selected if isinstance(item, ConnectionItem) and item._state is not CONNECTION_STATE.VALID),
             None,
         )
+        selected_stations = [item for item in selected if isinstance(item, StationItem)]
+        highlighted_connections = set()
+        for station in selected_stations:
+            highlighted_connections.update(station.all_connections())
+        for conn in self.scene._connections:
+            conn.set_highlighted(conn in highlighted_connections)
+
         if invalid_conn is not None:
             self.palette.show_invalid_connection_help(invalid_conn)
         else:
@@ -2166,6 +2228,10 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self.scene.cancel_validation()
+        super().closeEvent(event)
 
     @staticmethod
     def _serialize_condition(cond: Condition) -> dict:

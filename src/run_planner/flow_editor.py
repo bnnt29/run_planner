@@ -40,6 +40,7 @@ def main():
     app.setPalette(pal)
 
     win = MainWindow()
+    app.aboutToQuit.connect(win.scene.cancel_validation)
     win.show()
     sys.exit(app.exec_())
 

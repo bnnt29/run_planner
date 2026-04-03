@@ -647,6 +647,7 @@ class ConnectionItem(QGraphicsPathItem):
         self.conditions:list[Condition] = []
         self._invalid_reasons = []
         self._state:CONNECTION_STATE = CONNECTION_STATE.UNKNOWN
+        self._highlighted = False
         self._drag_end  = None
         self._manual_z_override = False
         self._syncing_z = False
@@ -792,6 +793,12 @@ class ConnectionItem(QGraphicsPathItem):
             self._state = state
             self._apply_style()
 
+    def set_highlighted(self, highlighted: bool):
+        highlighted = bool(highlighted)
+        if self._highlighted != highlighted:
+            self._highlighted = highlighted
+            self.update()
+
     def doubleClickTarget(self):
         return self.src_port.parentItem() if self.src_port else None
 
@@ -801,6 +808,11 @@ class ConnectionItem(QGraphicsPathItem):
         painter.setRenderHint(QPainter.Antialiasing)
 
         scene = self.scene()
+
+        if self._highlighted:
+            painter.setPen(QPen(QColor(252, 211, 77, 150), 6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self.path())
 
         if self.isSelected():
             sel_pen = QPen(QColor("#FCD34D"), 5, Qt.SolidLine, Qt.RoundCap)
