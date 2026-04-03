@@ -64,7 +64,6 @@ def paint_pdf_clean_editor_page(window, painter: QPainter, printer: QPrinter):
     from  run_planner.items import CONNECTION_STATE as CONNECTION_STATE
     page_rect = printer.pageRect(QPrinter.DevicePixel)
     for item in window.scene.items():
-        print(item, isinstance(item, ConnectionItem), getattr(item, "_state", None))
         if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:
             item.setVisible(False)
     source = window.scene.itemsBoundingRect().adjusted(-100, -100, 100, 10)
