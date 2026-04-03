@@ -15,8 +15,11 @@ import math
 import uuid
 import json
 import os
+import time
 import numpy as np
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 os.environ["QT_SCALE_FACTOR"] = "1"
@@ -29,6 +32,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
     QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar, QMenu,
     QSpacerItem, QStatusBar, QFileDialog, QDoubleSpinBox, QRadioButton,
+    QCheckBox,
     QButtonGroup
 )
 from PyQt5.QtCore import (
@@ -82,7 +86,8 @@ class Port(QGraphicsEllipseItem):
         self.connections:list[ConnectionItem] = []
         self._base_style()
         self.setAcceptHoverEvents(True)
-        self.setZValue(5)
+        parent_z = parent.zValue() if parent is not None else 0
+        self.setZValue(parent_z + 1)
         self.setCursor(Qt.CrossCursor)
 
     def _base_style(self):
@@ -288,6 +293,10 @@ class StationItem(ObjectItem):
             (self.in_port, self._side_for_connections(self.in_port.connections, "left", True)),
             (self.out_port, self._side_for_connections(self.out_port.connections, "right", False)),
         ])
+        # Z-Layer pro Station: 1) Body, 2) Ports, 3) eingehende Pfeile.
+        self.in_port.setZValue(self.zValue() + 1)
+        self.out_port.setZValue(self.zValue() + 1)
+        self.attr_port.setZValue(self.zValue() + 1)
         self.prepareGeometryChange()
 
     def type(self):
@@ -395,6 +404,11 @@ class StationItem(ObjectItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
+            self.scene().update_connections_for(self)
+        elif change == QGraphicsItem.ItemZValueHasChanged and self.scene():
+            self.in_port.setZValue(self.zValue() + 1)
+            self.out_port.setZValue(self.zValue() + 1)
+            self.attr_port.setZValue(self.zValue() + 1)
             self.scene().update_connections_for(self)
         return super().itemChange(change, value)
 
@@ -520,6 +534,7 @@ class AttributeItem(ObjectItem):
         self._layout_ports([
             (self.out_port, self._side_for_connections(self.out_port.connections, "right", False)),
         ])
+        self.out_port.setZValue(self.zValue() + 1)
         self.prepareGeometryChange()
 
     def type(self):
@@ -562,6 +577,9 @@ class AttributeItem(ObjectItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
+            self.scene().update_connections_for(self)
+        elif change == QGraphicsItem.ItemZValueHasChanged and self.scene():
+            self.out_port.setZValue(self.zValue() + 1)
             self.scene().update_connections_for(self)
         return super().itemChange(change, value)
 
@@ -630,9 +648,32 @@ class ConnectionItem(QGraphicsPathItem):
         self._invalid_reasons = []
         self._state:CONNECTION_STATE = CONNECTION_STATE.UNKNOWN
         self._drag_end  = None
-        self.setZValue(10)
+        self._manual_z_override = False
+        self._syncing_z = False
+        self._sync_z_layer()
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self._rebuild()
+
+    def _sync_z_layer(self):
+        if self._manual_z_override:
+            return
+        # Eingehende Pfeile einer Station liegen über Body und Ports der Ziel-Station.
+        dst_parent = self.dst_port.parentItem() if self.dst_port else None
+        if dst_parent is not None:
+            self._syncing_z = True
+            self.setZValue(dst_parent.zValue() + 2)
+            self._syncing_z = False
+            return
+        src_parent = self.src_port.parentItem() if self.src_port else None
+        self._syncing_z = True
+        self.setZValue((src_parent.zValue() + 2) if src_parent is not None else 2)
+        self._syncing_z = False
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemZValueHasChanged and not self._syncing_z:
+            self._manual_z_override = True
+            self._sync_z_layer()
+        return super().itemChange(change, value)
 
     # ── Path ──────────────────────────────────────────────────────────────────
 
@@ -666,6 +707,7 @@ class ConnectionItem(QGraphicsPathItem):
     def _rebuild(self):
         if self.src_port is None:
             return
+        self._sync_z_layer()
         start = self.src_port.scene_pos()
         end   = self._drag_end if self._drag_end else (
             self.dst_port.scene_pos() if self.dst_port else start
@@ -723,6 +765,7 @@ class ConnectionItem(QGraphicsPathItem):
     def finalize(self, dst_port: Port):
         self.dst_port  = dst_port
         self._drag_end = None
+        self._sync_z_layer()
         self._rebuild()
 
     # ── Style ─────────────────────────────────────────────────────────────────
@@ -1763,6 +1806,8 @@ class CONNECTION_KIND(Enum):
     
 class FlowScene(QGraphicsScene):
     status_message = pyqtSignal(str)
+    validation_debug = pyqtSignal(str)
+    validation_result_ready = pyqtSignal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1771,6 +1816,16 @@ class FlowScene(QGraphicsScene):
         self._wip_conn:    ConnectionItem | None = None
         self._wip_src:     Port | None           = None
         self.palette_widget = None
+        self._validation_executor = ThreadPoolExecutor(max_workers=1)
+        self._validation_future = None
+        self._validation_generation = 0
+        self._queued_validation = None
+        self._validation_meta = {}
+        self._validation_cancel_event = None
+        self.auto_validate_enabled = True
+        self._validation_cache_best_states = {}
+        self._validation_cache_checkpoint_levels = {}
+        self.validation_result_ready.connect(self._apply_validation_result)
 
     def set_palette(self, palette_widget):
         self.palette_widget = palette_widget
@@ -1893,7 +1948,7 @@ class FlowScene(QGraphicsScene):
             self.removeItem(item)
         elif isinstance(item, TextBlockItem):
             self.removeItem(item)
-        self.validate_all()
+        self.validate_all(changed_targets=[item])
 
     def contextMenuEvent(self, event):
         item = self.itemAt(event.scenePos(), QTransform())
@@ -1962,7 +2017,7 @@ class FlowScene(QGraphicsScene):
                     self.update_connections_for(src_item)
                 if hasattr(dst_item, "_layout") and dst_item is not src_item:
                     self.update_connections_for(dst_item)
-                self.validate_all()
+                self.validate_all(changed_targets=[src_item, dst_item, self._wip_conn])
                 self.status_message.emit("Verbindung erstellt. Doppelklick auf Station zum Bearbeiten.")
             else:
                 self.status_message.emit("Verbindung abgebrochen.")
@@ -1974,7 +2029,8 @@ class FlowScene(QGraphicsScene):
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            for item in self.selectedItems():
+            deleted_items = list(self.selectedItems())
+            for item in deleted_items:
                 if isinstance(item, ConnectionItem):
                     self._remove_conn(item)
                 elif isinstance(item, StationItem):
@@ -1987,7 +2043,7 @@ class FlowScene(QGraphicsScene):
                     self.removeItem(item)
                 elif isinstance(item, TextBlockItem):
                     self.removeItem(item)
-            self.validate_all()
+            self.validate_all(changed_targets=deleted_items)
         super().keyPressEvent(event)
 
     # ── Verbindungen ─────────────────────────────────────────────────────────
@@ -2020,7 +2076,7 @@ class FlowScene(QGraphicsScene):
             self.update_connections_for(src_item)
         if hasattr(dst_item, "_layout") and dst_item is not src_item:
             self.update_connections_for(dst_item)
-        self.validate_all()
+        self.validate_all(changed_targets=[src_item, dst_item, conn])
 
     def _remove_related_conditions_for_attribute(self, attribute: AttributeItem, station: StationItem):
         if attribute is None or station is None:
@@ -2050,6 +2106,7 @@ class FlowScene(QGraphicsScene):
             return 0
 
         removed = 0
+        touched_connections = []
 
         for conn in self._connections:
             if self._connection_kind(conn) != CONNECTION_KIND.FLOW:
@@ -2059,10 +2116,13 @@ class FlowScene(QGraphicsScene):
                 cond for cond in conn.conditions
                 if self._attribute_name_key(getattr(getattr(cond, "attribute", None), "name", "")) != name_key
             ]
-            removed += old_conn_count - len(conn.conditions)
+            delta = old_conn_count - len(conn.conditions)
+            removed += delta
+            if delta > 0:
+                touched_connections.append(conn)
 
         if removed > 0:
-            self.validate_all()
+            self.validate_all(changed_targets=touched_connections)
 
         return removed
 
@@ -2111,7 +2171,7 @@ class FlowScene(QGraphicsScene):
             item.rules        = d["rules"]
             self._refresh_template(item)
             self.update_connections_for(item)
-            self.validate_all()
+            self.validate_all(changed_targets=[item])
 
     def open_attribute_editor(self, item: AttributeItem):
         parent = self.views()[0] if self.views() else None
@@ -2131,7 +2191,7 @@ class FlowScene(QGraphicsScene):
             item.color = d["color"]
             self._refresh_template(item)
             self.update_connections_for(item)
-            self.validate_all()
+            self.validate_all(changed_targets=[item])
             break
 
     def open_connection_editor(self, conn: ConnectionItem):
@@ -2142,17 +2202,17 @@ class FlowScene(QGraphicsScene):
         def _preview_validate():
             conn.conditions = dlg.result_data()
             conn.update()
-            self.validate_all()
+            self.validate_all(changed_targets=[conn])
 
         dlg.conditions_changed.connect(_preview_validate)
         if dlg.exec_() == QDialog.Accepted:
             conn.conditions = dlg.result_data()
             conn.update()
-            self.validate_all()
+            self.validate_all(changed_targets=[conn])
         else:
             conn.conditions = previous_conditions
             conn.update()
-            self.validate_all()
+            self.validate_all(changed_targets=[conn])
 
     def open_text_editor(self, item: TextBlockItem):
         parent = self.views()[0] if self.views() else None
@@ -2168,52 +2228,233 @@ class FlowScene(QGraphicsScene):
     # Stationen werden während der Traversierung überprüft. Effekte propagieren
     # den Zustand an Nachfolger-Stationen.
 
-    def validate_all(self):
+    @staticmethod
+    def _snapshot_condition(cond: Condition) -> dict:
+        attr = getattr(cond, "attribute", None)
+        attr_name = getattr(attr, "name", str(attr)) if attr is not None else ""
+        return {
+            "attr_id": getattr(attr, "node_id", None),
+            "attr_name": attr_name,
+            "op": cond.operator.value if isinstance(cond.operator, CONDITION_OP) else str(cond.operator),
+            "value": float(getattr(cond, "value", 0.0)),
+        }
+
+    @staticmethod
+    def _snapshot_effect(eff: Effect) -> dict:
+        attr = getattr(eff, "attribute", None)
+        return {
+            "attr_id": getattr(attr, "node_id", None),
+            "action": eff.action.value if isinstance(eff.action, EFFECT_OP) else str(eff.action),
+            "value": float(getattr(eff, "value", 0.0)),
+        }
+
+    @staticmethod
+    def _snapshot_cond_text(cond: dict) -> str:
+        name = cond.get("attr_name", "")
+        op = cond.get("op", CONDITION_OP.EXISTS.value)
+        value = cond.get("value", 0.0)
+        prefix = f"⟨{name}⟩"
+        if op == CONDITION_OP.EXISTS.value:
+            return f"{prefix} vorhanden"
+        if op == CONDITION_OP.NOT_EXISTS.value:
+            return f"{prefix} fehlt"
+        return f"{prefix} {op} {value}"
+
+    @staticmethod
+    def _snapshot_check_condition(cond: dict, state: dict) -> bool:
+        attr_id = cond.get("attr_id")
+        op = cond.get("op", CONDITION_OP.EXISTS.value)
+        value = float(cond.get("value", 0.0))
+        count = 0.0 if attr_id is None or attr_id not in state or state[attr_id] is None else state[attr_id]
+
+        if op == CONDITION_OP.EXISTS.value:
+            return count > 0
+        if op == CONDITION_OP.NOT_EXISTS.value:
+            return count == 0
+        if op == CONDITION_OP.EQUALS.value:
+            return count == value
+        if op == CONDITION_OP.NOT_EQUALS.value:
+            return count != value
+        if op == CONDITION_OP.GREATER.value:
+            return count > value
+        if op == CONDITION_OP.GREATER_EQ.value:
+            return count >= value
+        if op == CONDITION_OP.LESS.value:
+            return count < value
+        if op == CONDITION_OP.LESS_EQ.value:
+            return count <= value
+        return False
+
+    @staticmethod
+    def _snapshot_apply_effects(state: dict, effects: list[dict]) -> dict:
+        out = dict(state)
+        for eff in effects:
+            attr_id = eff.get("attr_id")
+            if attr_id is None:
+                continue
+            action = eff.get("action", EFFECT_OP.SET.value)
+            value = float(eff.get("value", 0.0))
+            present = attr_id in out and out[attr_id] not in (None, 0)
+
+            if action == EFFECT_OP.ADD.value:
+                out[attr_id] = value if not present else out[attr_id] + value
+            elif action == EFFECT_OP.SUBTRACT.value:
+                out[attr_id] = -value if not present else out[attr_id] - value
+            elif action == EFFECT_OP.MULTIPLY.value:
+                out[attr_id] = value if not present else out[attr_id] * value
+            elif action == EFFECT_OP.DIVIDE.value:
+                out[attr_id] = (1 / value) if not present else out[attr_id] / value
+            elif action == EFFECT_OP.MOD.value:
+                out[attr_id] = (1 % value) if not present else out[attr_id] % value
+            else:
+                out[attr_id] = value
+        return out
+
+    def _build_validation_snapshot(self, changed_targets=None):
         stations = self._station_items()
         if not stations:
-            return
+            return None, None
 
-        for item in self.selectedItems():
-            if isinstance(item, ConnectionItem):
-                item.setSelected(False)
+        conn_lookup = {id(conn): conn for conn in self._connections}
+        station_lookup = {station.node_id: station for station in stations}
 
-        # Baue den Flow-Graph auf
-        flow_preds:dict[StationItem, list] = {s: [] for s in stations}
-        flow_succs:dict[StationItem, list] = {s: [] for s in stations}
+        station_data = {}
+        root_ids = []
+        checkpoint_ids = set()
+        for station in stations:
+            rules = []
+            for rule in station.rules:
+                rules.append({
+                    "conditions": [self._snapshot_condition(cond) for cond in rule.conditions],
+                    "effects": [self._snapshot_effect(eff) for eff in rule.effects],
+                })
+            station_data[station.node_id] = {
+                "id": station.node_id,
+                "name": station.name,
+                "type": station.type.value if isinstance(station.type, STATION_TYPE) else int(station.type),
+                "rules": rules,
+            }
+            if station.type == STATION_TYPE.START:
+                root_ids.append(station.node_id)
+            if station.type == STATION_TYPE.END:
+                checkpoint_ids.add(station.node_id)
+
+        flow_succs = {sid: [] for sid in station_data.keys()}
+        flow_conn_conditions = {}
+        flow_conn_keys = []
+        flow_conn_srcdst = {}
+        attribute_conn_keys = []
+        invalid_conn_keys = []
 
         for conn in self._connections:
-            conn._invalid_reasons = []
-            conn.set_state(CONNECTION_STATE.UNKNOWN)
+            key = id(conn)
             kind = self._connection_kind(conn)
+            if kind == CONNECTION_KIND.ATTRIBUTE:
+                attribute_conn_keys.append(key)
+                continue
+            if kind != CONNECTION_KIND.FLOW:
+                invalid_conn_keys.append(key)
+                continue
 
-            if kind == CONNECTION_KIND.FLOW:
-                src = conn.src_port.parentItem()
-                dst = conn.dst_port.parentItem()
-                if isinstance(src, StationItem) and isinstance(dst, StationItem):
-                    flow_preds[dst].append((conn, src))
-                    flow_succs[src].append((conn, dst))
-            elif kind == CONNECTION_KIND.ATTRIBUTE:
-                conn.set_state(CONNECTION_STATE.ATTRIBUTE)
+            src = conn.src_port.parentItem() if conn.src_port else None
+            dst = conn.dst_port.parentItem() if conn.dst_port else None
+            if not isinstance(src, StationItem) or not isinstance(dst, StationItem):
+                invalid_conn_keys.append(key)
+                continue
 
-        root_stations = [s for s in stations if s.type == STATION_TYPE.START]
-        if not root_stations:
-            self.status_message.emit("Keine Startstation gefunden (Typ Start fehlt)")
-            return
+            if src.node_id not in flow_succs:
+                flow_succs[src.node_id] = []
+            flow_succs[src.node_id].append((key, dst.node_id))
+            flow_conn_srcdst[key] = (src.node_id, dst.node_id)
+            flow_conn_conditions[key] = [self._snapshot_condition(cond) for cond in conn.conditions]
+            flow_conn_keys.append(key)
 
-        checkpoint_stations = {s for s in stations if s.type == STATION_TYPE.END}
-        for station in checkpoint_stations:
-            station.end_badge_text_color = QColor("#FFFFFF")
-            station.update()
+        changed_station_ids = set()
+        changed_conn_keys = set()
+        for target in changed_targets or []:
+            if isinstance(target, StationItem):
+                changed_station_ids.add(target.node_id)
+            elif isinstance(target, ConnectionItem):
+                changed_conn_keys.add(id(target))
+                src = target.src_port.parentItem() if target.src_port else None
+                dst = target.dst_port.parentItem() if target.dst_port else None
+                if isinstance(src, StationItem):
+                    changed_station_ids.add(src.node_id)
+                if isinstance(dst, StationItem):
+                    changed_station_ids.add(dst.node_id)
+            elif isinstance(target, AttributeItem):
+                for conn in target.out_port.connections:
+                    if self._connection_kind(conn) != CONNECTION_KIND.ATTRIBUTE:
+                        continue
+                    dst = conn.dst_port.parentItem() if conn.dst_port else None
+                    if isinstance(dst, StationItem):
+                        changed_station_ids.add(dst.node_id)
 
-        def _apply_station_rule(rule: StationRule, incoming_state: dict) -> dict:
-            output_state = dict(incoming_state)
-            if all(cond.check(output_state) for cond in rule.conditions):
-                output_state = self._apply_effects(output_state, rule.effects)
-            return output_state
+        if not self._validation_cache_best_states or (not changed_station_ids and not changed_conn_keys):
+            target_conn_keys = set(flow_conn_keys)
+            target_checkpoint_ids = set(checkpoint_ids)
+        else:
+            affected_nodes = set(changed_station_ids)
+            queue = deque(changed_station_ids)
+            while queue:
+                node_id = queue.popleft()
+                for _, succ_id in flow_succs.get(node_id, []):
+                    if succ_id not in affected_nodes:
+                        affected_nodes.add(succ_id)
+                        queue.append(succ_id)
 
-        def _transition_for(conn: ConnectionItem, station_name: str, station_conditions: list[Condition], incoming_state: dict):
-            unmet_conn = self._conditions_ok(conn.conditions, incoming_state)
-            unmet_station = self._conditions_ok(station_conditions, incoming_state)
+            for conn_key in changed_conn_keys:
+                srcdst = flow_conn_srcdst.get(conn_key)
+                if srcdst is None:
+                    continue
+                src_id, dst_id = srcdst
+                affected_nodes.add(src_id)
+                affected_nodes.add(dst_id)
+
+            target_conn_keys = {
+                conn_key
+                for conn_key, (src_id, dst_id) in flow_conn_srcdst.items()
+                if src_id in affected_nodes or dst_id in affected_nodes
+            }
+            target_checkpoint_ids = {sid for sid in checkpoint_ids if sid in affected_nodes}
+
+        snapshot = {
+            "station_data": station_data,
+            "root_ids": root_ids,
+            "checkpoint_ids": checkpoint_ids,
+            "flow_succs": flow_succs,
+            "flow_conn_conditions": flow_conn_conditions,
+            "flow_conn_keys": flow_conn_keys,
+            "target_conn_keys": list(target_conn_keys),
+            "target_checkpoint_ids": list(target_checkpoint_ids),
+            "attribute_conn_keys": attribute_conn_keys,
+            "invalid_conn_keys": invalid_conn_keys,
+            "max_depth": max(5, len(self._connections) * max(5, len(stations))),
+        }
+        return snapshot, {"conn_lookup": conn_lookup, "station_lookup": station_lookup}
+
+    def _compute_validation_snapshot(self, snapshot: dict, cancel_event: Event, generation: int):
+        started = time.perf_counter()
+        station_data = snapshot["station_data"]
+        root_ids = snapshot["root_ids"]
+        checkpoint_ids = snapshot["checkpoint_ids"]
+        flow_succs = snapshot["flow_succs"]
+        flow_conn_conditions = snapshot["flow_conn_conditions"]
+        target_conn_keys = set(snapshot.get("target_conn_keys", snapshot["flow_conn_keys"]))
+        target_checkpoint_ids = set(snapshot.get("target_checkpoint_ids", snapshot["checkpoint_ids"]))
+        total_flow_conn_keys = set(snapshot["flow_conn_keys"])
+        max_depth = snapshot["max_depth"]
+
+        def apply_station_rule(rule: dict, incoming_state: dict) -> dict:
+            out = dict(incoming_state)
+            if all(self._snapshot_check_condition(cond, out) for cond in rule["conditions"]):
+                out = self._snapshot_apply_effects(out, rule["effects"])
+            return out
+
+        def transition_for(conn_key: int, station_name: str, station_conditions: list[dict], incoming_state: dict):
+            conn_conditions = flow_conn_conditions.get(conn_key, [])
+            unmet_conn = [cond for cond in conn_conditions if not self._snapshot_check_condition(cond, incoming_state)]
+            unmet_station = [cond for cond in station_conditions if not self._snapshot_check_condition(cond, incoming_state)]
 
             if not unmet_conn and not unmet_station:
                 state = CONNECTION_STATE.VALID
@@ -2226,41 +2467,28 @@ class FlowScene(QGraphicsScene):
 
             reasons = []
             if unmet_conn:
-                conn_state_values = {cond.attribute.name: incoming_state.get(cond.attribute) for cond in unmet_conn}
+                conn_state_values = {cond.get("attr_name", ""): incoming_state.get(cond.get("attr_id")) for cond in unmet_conn}
                 for cond in unmet_conn:
                     reasons.append(
-                        f"Die Pfeil bedingung ist nicht erfüllt: {str(cond)} ({conn_state_values})"
+                        f"Die Pfeil bedingung ist nicht erfüllt: {self._snapshot_cond_text(cond)} ({conn_state_values})"
                     )
             if unmet_station:
-                station_state_values = {cond.attribute.name: incoming_state.get(cond.attribute) for cond in unmet_station}
+                station_state_values = {cond.get("attr_name", ""): incoming_state.get(cond.get("attr_id")) for cond in unmet_station}
                 for cond in unmet_station:
                     reasons.append(
-                        f"Die {station_name} bedingung ist nicht erfüllt: {str(cond)} ({station_state_values})"
+                        f"Die {station_name} bedingung ist nicht erfüllt: {self._snapshot_cond_text(cond)} ({station_state_values})"
                     )
             return state, reasons
 
-        def _collect_connection_states(allow_conditional: bool):
-            max_depth = max(5, len(self._connections) * max(5, len(stations)))
-            conn_states = {conn: [] for conn in self._connections if self._connection_kind(conn) == CONNECTION_KIND.FLOW}
+        def collect_connection_states(allow_conditional: bool):
+            conn_states = {conn_key: [] for conn_key in target_conn_keys}
 
-            def _state_key(state: dict):
-                return tuple(sorted(
-                    (
-                        getattr(attr, "node_id", id(attr)),
-                        state.get(attr),
-                    )
-                    for attr in state.keys()
-                ))
+            def state_key(state: dict):
+                return tuple(sorted((attr_id, state.get(attr_id)) for attr_id in state.keys()))
 
-            def _dfs(
-                station: StationItem,
-                incoming_state: dict,
-                depth_left: int,
-                reached_checkpoint: bool,
-                cache: set,
-            ):
-                at_checkpoint = reached_checkpoint or (station in checkpoint_stations)
-                cache_key = (station.node_id, depth_left, at_checkpoint, _state_key(incoming_state))
+            def dfs(station_id: str, incoming_state: dict, depth_left: int, reached_checkpoint: bool, cache: set):
+                at_checkpoint = reached_checkpoint or (station_id in checkpoint_ids)
+                cache_key = (station_id, depth_left, at_checkpoint, state_key(incoming_state))
                 if cache_key in cache:
                     return
                 cache.add(cache_key)
@@ -2268,87 +2496,58 @@ class FlowScene(QGraphicsScene):
                 if depth_left <= 0:
                     return
 
-                for conn, succ_station in flow_succs[station]:
-                    # Stationen ohne Regeln dürfen trotzdem traversiert und validiert werden.
-                    if not succ_station.rules:
-                        transition_state, reasons = _transition_for(conn, succ_station.name, [], incoming_state)
-                        if conn in conn_states:
-                            conn_states[conn].append((transition_state, reasons))
-
-                        if transition_state == CONNECTION_STATE.VALID:
-                            pass
-                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID:
-                            pass
-                        else:
-                            continue
-
-                        _dfs(
-                            succ_station,
-                            incoming_state,
-                            depth_left - 1,
-                            at_checkpoint,
-                            cache,
-                        )
+                for conn_key, succ_id in flow_succs.get(station_id, []):
+                    succ = station_data.get(succ_id)
+                    if succ is None:
                         continue
 
-                    for rule in succ_station.rules:
-                        # Bedingungen werden auf dem eingehenden Zustand geprüft;
-                        # Effekte gelten erst danach, wenn die Regel wirklich passt.
-                        transition_state, reasons = _transition_for(
-                            conn,
-                            succ_station.name,
-                            rule.conditions,
-                            incoming_state,
-                        )
-                        if conn in conn_states:
-                            conn_states[conn].append((transition_state, reasons))
+                    rules = succ.get("rules", [])
+                    if not rules:
+                        transition_state, reasons = transition_for(conn_key, succ["name"], [], incoming_state)
+                        if conn_key in conn_states:
+                            conn_states[conn_key].append((transition_state, reasons))
+                        if transition_state == CONNECTION_STATE.VALID or (
+                            allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID
+                        ):
+                            dfs(succ_id, incoming_state, depth_left - 1, at_checkpoint, cache)
+                        continue
 
-                        if transition_state == CONNECTION_STATE.VALID:
-                            pass
-                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID:
-                            pass
-                        else:
-                            continue
+                    for rule in rules:
+                        transition_state, reasons = transition_for(conn_key, succ["name"], rule["conditions"], incoming_state)
+                        if conn_key in conn_states:
+                            conn_states[conn_key].append((transition_state, reasons))
+                        if transition_state == CONNECTION_STATE.VALID or (
+                            allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID
+                        ):
+                            current_state = apply_station_rule(rule, incoming_state)
+                            dfs(succ_id, current_state, depth_left - 1, at_checkpoint, cache)
 
-                        current_state = _apply_station_rule(rule, incoming_state)
-
-                        _dfs(
-                            succ_station,
-                            current_state,
-                            depth_left - 1,
-                            at_checkpoint,
-                            cache,
-                        )
             for depth in range(1, max_depth + 1):
-                for root in root_stations:
-                    _dfs(root, {}, depth, False, set())
+                if cancel_event.is_set():
+                    return None
+                if depth % max(1, max_depth // 10) == 0:
+                    phase_base = 0 if not allow_conditional else 34
+                    phase_progress = int(depth * 33 / max_depth)
+                    self.status_message.emit(f"Validierung läuft ... {min(67, phase_base + phase_progress)}%")
+                for root_id in root_ids:
+                    dfs(root_id, {}, depth, False, set())
             return conn_states
 
-        strict_states = _collect_connection_states(allow_conditional=False)
-        fallback_states = _collect_connection_states(allow_conditional=True)
+        def collect_checkpoint_levels():
+            checkpoint_levels = {sid: set() for sid in target_checkpoint_ids}
 
-        def _collect_checkpoint_path_levels():
-            max_depth = max(5, len(self._connections) * max(5, len(stations)))
-            checkpoint_levels = {station: set() for station in checkpoint_stations}
+            def state_key(state: dict):
+                return tuple(sorted((attr_id, state.get(attr_id)) for attr_id in state.keys()))
 
-            def _state_key(state: dict):
-                return tuple(sorted(
-                    (
-                        getattr(attr, "node_id", id(attr)),
-                        state.get(attr),
-                    )
-                    for attr in state.keys()
-                ))
-
-            def _state_level(state: CONNECTION_STATE) -> int:
+            def state_level(state: CONNECTION_STATE) -> int:
                 if state == CONNECTION_STATE.VALID:
                     return 0
                 if state == CONNECTION_STATE.CONDITIONAL_VALID:
                     return 1
                 return 2
 
-            def _dfs(station: StationItem, incoming_state: dict, depth_left: int, level: int, cache: set):
-                cache_key = (station.node_id, depth_left, level, _state_key(incoming_state))
+            def dfs(station_id: str, incoming_state: dict, depth_left: int, level: int, cache: set):
+                cache_key = (station_id, depth_left, level, state_key(incoming_state))
                 if cache_key in cache:
                     return
                 cache.add(cache_key)
@@ -2356,29 +2555,76 @@ class FlowScene(QGraphicsScene):
                 if depth_left <= 0:
                     return
 
-                for conn, succ_station in flow_succs[station]:
-                    if not succ_station.rules:
-                        transition_state, _ = _transition_for(conn, succ_station.name, [], incoming_state)
-                        next_level = max(level, _state_level(transition_state))
-                        if succ_station in checkpoint_levels:
-                            checkpoint_levels[succ_station].add(next_level)
-                        _dfs(succ_station, incoming_state, depth_left - 1, next_level, cache)
+                for conn_key, succ_id in flow_succs.get(station_id, []):
+                    succ = station_data.get(succ_id)
+                    if succ is None:
                         continue
 
-                    for rule in succ_station.rules:
-                        transition_state, _ = _transition_for(conn, succ_station.name, rule.conditions, incoming_state)
-                        next_level = max(level, _state_level(transition_state))
-                        if succ_station in checkpoint_levels:
-                            checkpoint_levels[succ_station].add(next_level)
-                        current_state = _apply_station_rule(rule, incoming_state)
-                        _dfs(succ_station, current_state, depth_left - 1, next_level, cache)
+                    rules = succ.get("rules", [])
+                    if not rules:
+                        transition_state, _ = transition_for(conn_key, succ["name"], [], incoming_state)
+                        next_level = max(level, state_level(transition_state))
+                        if succ_id in checkpoint_levels:
+                            checkpoint_levels[succ_id].add(next_level)
+                        dfs(succ_id, incoming_state, depth_left - 1, next_level, cache)
+                        continue
+
+                    for rule in rules:
+                        transition_state, _ = transition_for(conn_key, succ["name"], rule["conditions"], incoming_state)
+                        next_level = max(level, state_level(transition_state))
+                        if succ_id in checkpoint_levels:
+                            checkpoint_levels[succ_id].add(next_level)
+                        current_state = apply_station_rule(rule, incoming_state)
+                        dfs(succ_id, current_state, depth_left - 1, next_level, cache)
 
             for depth in range(1, max_depth + 1):
-                for root in root_stations:
-                    _dfs(root, {}, depth, 0, set())
+                if cancel_event.is_set():
+                    return None
+                if depth % max(1, max_depth // 10) == 0:
+                    self.status_message.emit(f"Validierung läuft ... {67 + int(depth * 32 / max_depth)}%")
+                for root_id in root_ids:
+                    dfs(root_id, {}, depth, 0, set())
             return checkpoint_levels
 
-        checkpoint_levels = _collect_checkpoint_path_levels()
+        strict_states = collect_connection_states(False)
+        if strict_states is None:
+            return {
+                "cancelled": True,
+                "metrics": {
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "mode": "inkrementell" if target_conn_keys != total_flow_conn_keys else "voll",
+                    "target_flow": len(target_conn_keys),
+                    "total_flow": len(total_flow_conn_keys),
+                    "target_checkpoints": len(target_checkpoint_ids),
+                    "total_checkpoints": len(checkpoint_ids),
+                },
+            }
+        fallback_states = collect_connection_states(True)
+        if fallback_states is None:
+            return {
+                "cancelled": True,
+                "metrics": {
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "mode": "inkrementell" if target_conn_keys != total_flow_conn_keys else "voll",
+                    "target_flow": len(target_conn_keys),
+                    "total_flow": len(total_flow_conn_keys),
+                    "target_checkpoints": len(target_checkpoint_ids),
+                    "total_checkpoints": len(checkpoint_ids),
+                },
+            }
+        checkpoint_levels = collect_checkpoint_levels()
+        if checkpoint_levels is None:
+            return {
+                "cancelled": True,
+                "metrics": {
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "mode": "inkrementell" if target_conn_keys != total_flow_conn_keys else "voll",
+                    "target_flow": len(target_conn_keys),
+                    "total_flow": len(total_flow_conn_keys),
+                    "target_checkpoints": len(target_checkpoint_ids),
+                    "total_checkpoints": len(checkpoint_ids),
+                },
+            }
 
         priority = {
             CONNECTION_STATE.VALID: 0,
@@ -2387,59 +2633,201 @@ class FlowScene(QGraphicsScene):
             CONNECTION_STATE.INVALID: 3,
         }
 
-        validated_flow = 0
-        for conn in self._connections:
-            kind = self._connection_kind(conn)
-            if kind == CONNECTION_KIND.ATTRIBUTE:
-                continue
-            if kind != CONNECTION_KIND.FLOW:
-                if not conn.src_port or not conn.dst_port:
-                    conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
-                else:
-                    conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen."]
-                continue
-
-            candidates = strict_states.get(conn, [])
+        best_states = {}
+        for conn_key in target_conn_keys:
+            candidates = strict_states.get(conn_key, [])
             if not any(state == CONNECTION_STATE.VALID for state, _ in candidates):
-                candidates = fallback_states.get(conn, [])
-
+                candidates = fallback_states.get(conn_key, [])
             if candidates:
-                best_state, best_reasons = min(candidates, key=lambda x: priority.get(x[0], 99))
-                conn.set_state(best_state)
-                conn._invalid_reasons = best_reasons
-                validated_flow += 1
-            else:
+                best_states[conn_key] = min(candidates, key=lambda x: priority.get(x[0], 99))
+
+        self.status_message.emit("Validierung läuft ... 100%")
+
+        return {
+            "best_states": best_states,
+            "checkpoint_levels": {sid: list(levels) for sid, levels in checkpoint_levels.items()},
+            "root_exists": bool(root_ids),
+            "cancelled": False,
+            "metrics": {
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "mode": "inkrementell" if target_conn_keys != total_flow_conn_keys else "voll",
+                "target_flow": len(target_conn_keys),
+                "total_flow": len(total_flow_conn_keys),
+                "target_checkpoints": len(target_checkpoint_ids),
+                "total_checkpoints": len(checkpoint_ids),
+            },
+        }
+
+    def _launch_validation_job(self, generation: int, snapshot: dict):
+        cancel_event = Event()
+        self._validation_cancel_event = cancel_event
+        self._validation_future = self._validation_executor.submit(
+            self._compute_validation_snapshot,
+            snapshot,
+            cancel_event,
+            generation,
+        )
+
+        def _done(fut):
+            try:
+                result = fut.result()
+            except Exception as exc:
+                result = {"error": str(exc)}
+            self.validation_result_ready.emit(generation, result)
+
+        self._validation_future.add_done_callback(_done)
+
+    def _apply_validation_result(self, generation: int, result: dict):
+        meta = self._validation_meta.pop(generation, None)
+        is_latest = generation == self._validation_generation
+        metrics = result.get("metrics", {})
+
+        def emit_validation_debug(state: str):
+            if not metrics:
+                return
+            self.validation_debug.emit(
+                f"{state} | {metrics.get('mode', '-')}, "
+                f"Flow {metrics.get('target_flow', 0)}/{metrics.get('total_flow', 0)}, "
+                f"Checkpoints {metrics.get('target_checkpoints', 0)}/{metrics.get('total_checkpoints', 0)}, "
+                f"{metrics.get('duration_ms', 0)} ms"
+            )
+
+        if meta is not None and is_latest and "error" not in result and not result.get("cancelled", False):
+            conn_lookup = meta["conn_lookup"]
+            station_lookup = meta["station_lookup"]
+            best_states = dict(self._validation_cache_best_states)
+            best_states.update(result.get("best_states", {}))
+            checkpoint_levels = dict(self._validation_cache_checkpoint_levels)
+            checkpoint_levels.update(result.get("checkpoint_levels", {}))
+            self._validation_cache_best_states = best_states
+            self._validation_cache_checkpoint_levels = checkpoint_levels
+
+            for item in self.selectedItems():
+                if isinstance(item, ConnectionItem):
+                    item.setSelected(False)
+
+            for conn in self._connections:
+                conn._invalid_reasons = []
                 conn.set_state(CONNECTION_STATE.UNKNOWN)
-                conn._invalid_reasons = ["Keine erreichbare Validierungsroute von einer Startstation."]
+                kind = self._connection_kind(conn)
+                if kind == CONNECTION_KIND.ATTRIBUTE:
+                    conn.set_state(CONNECTION_STATE.ATTRIBUTE)
 
-        total_flow = sum(1 for conn in self._connections if self._connection_kind(conn) == CONNECTION_KIND.FLOW)
-        valid_flow = sum(1 for conn in self._connections if conn._state == CONNECTION_STATE.VALID)
-        conditional_flow = sum(1 for conn in self._connections if conn._state == CONNECTION_STATE.CONDITIONAL_VALID)
-        invalid_flow = sum(
-            1
-            for conn in self._connections
-            if conn._state in (CONNECTION_STATE.INVALID, CONNECTION_STATE.CONDITIONAL_INVALID)
-        )
+            for conn_key, payload in best_states.items():
+                conn = conn_lookup.get(conn_key)
+                if conn is None:
+                    continue
+                if conn not in self._connections:
+                    continue
+                state, reasons = payload
+                conn.set_state(state)
+                conn._invalid_reasons = reasons
 
-        self.status_message.emit(
-            f"{validated_flow}/{total_flow} FLOW-Verbindungen validiert  |  "
-            f"gültig: {valid_flow}, bedingt gültig: {conditional_flow}, ungültig: {invalid_flow}"
-        )
+            for conn in self._connections:
+                kind = self._connection_kind(conn)
+                if kind == CONNECTION_KIND.ATTRIBUTE:
+                    continue
+                if kind != CONNECTION_KIND.FLOW:
+                    if not conn.src_port or not conn.dst_port:
+                        conn._invalid_reasons = ["Die Verbindung hat keinen vollständigen Start-/Ziel-Port."]
+                    else:
+                        conn._invalid_reasons = ["Die Verbindungstypen passen nicht zusammen."]
+                    continue
+                if conn._state == CONNECTION_STATE.UNKNOWN:
+                    conn._invalid_reasons = ["Keine erreichbare Validierungsroute von einer Startstation."]
 
-        for station in checkpoint_stations:
-            levels = checkpoint_levels.get(station, set())
-            if levels and levels == {0}:
-                station.end_badge_text_color = QColor("#22C55E")  # all fully valid
-            elif 0 in levels:
-                station.end_badge_text_color = QColor("#3B82F6")  # any fully valid
-            elif 1 in levels:
-                station.end_badge_text_color = QColor("#9A1DEE")  # any conditional valid
-            else:
+            total_flow = sum(1 for conn in self._connections if self._connection_kind(conn) == CONNECTION_KIND.FLOW)
+            validated_flow = sum(
+                1
+                for conn in self._connections
+                if self._connection_kind(conn) == CONNECTION_KIND.FLOW and conn._state != CONNECTION_STATE.UNKNOWN
+            )
+            valid_flow = sum(1 for conn in self._connections if conn._state == CONNECTION_STATE.VALID)
+            conditional_flow = sum(1 for conn in self._connections if conn._state == CONNECTION_STATE.CONDITIONAL_VALID)
+            invalid_flow = sum(
+                1
+                for conn in self._connections
+                if conn._state in (CONNECTION_STATE.INVALID, CONNECTION_STATE.CONDITIONAL_INVALID)
+            )
+
+            self.status_message.emit(
+                f"{validated_flow}/{total_flow} FLOW-Verbindungen validiert  |  "
+                f"gültig: {valid_flow}, bedingt gültig: {conditional_flow}, ungültig: {invalid_flow}"
+            )
+            emit_validation_debug("ok")
+
+            for station in station_lookup.values():
+                if station.type != STATION_TYPE.END:
+                    continue
+                levels = set(checkpoint_levels.get(station.node_id, []))
+                if levels and levels == {0}:
+                    station.end_badge_text_color = QColor("#22C55E")
+                elif 0 in levels:
+                    station.end_badge_text_color = QColor("#3B82F6")
+                elif 1 in levels:
+                    station.end_badge_text_color = QColor("#9A1DEE")
+                else:
+                    station.end_badge_text_color = QColor("#FFFFFF")
+                station.update()
+
+        if meta is not None and is_latest and "error" in result:
+            self.status_message.emit(f"Validierungsfehler: {result['error']}")
+            emit_validation_debug("fehler")
+        elif meta is not None and is_latest and result.get("cancelled", False):
+            self.status_message.emit("Validierung abgebrochen")
+            emit_validation_debug("abbruch")
+
+        if self._queued_validation is not None:
+            queued_generation, queued_snapshot = self._queued_validation
+            self._queued_validation = None
+            if queued_generation > generation:
+                self._launch_validation_job(queued_generation, queued_snapshot)
+                return
+
+        self._validation_future = None
+        self._validation_cancel_event = None
+
+    def validate_all(self, changed_targets=None, force: bool = False):
+        if not self.auto_validate_enabled and not force:
+            return
+
+        self._validation_generation += 1
+        generation = self._validation_generation
+
+        snapshot, meta = self._build_validation_snapshot(changed_targets=changed_targets)
+        if snapshot is None or meta is None:
+            return
+
+        if not snapshot.get("root_ids"):
+            self.status_message.emit("Keine Startstation gefunden (Typ Start fehlt)")
+            return
+
+        for station in meta["station_lookup"].values():
+            if station.type == STATION_TYPE.END:
                 station.end_badge_text_color = QColor("#FFFFFF")
-            station.update()
+                station.update()
+
+        self._validation_meta[generation] = meta
+        self._queued_validation = (generation, snapshot)
+
+        if self._validation_cancel_event is not None:
+            self._validation_cancel_event.set()
+
+        if self._validation_future is not None and not self._validation_future.done():
+            self.status_message.emit("Validierung läuft ...")
+            return
+        queued_generation, queued_snapshot = self._queued_validation
+        self._queued_validation = None
+        self._launch_validation_job(queued_generation, queued_snapshot)
 
     def clear_all(self):
+        if self._validation_cancel_event is not None:
+            self._validation_cancel_event.set()
         self._connections.clear()
+        self._validation_meta.clear()
+        self._queued_validation = None
+        self._validation_cache_best_states = {}
+        self._validation_cache_checkpoint_levels = {}
         self.clear()
 
 
@@ -2537,7 +2925,7 @@ class FlowView(QGraphicsView):
                 item.setSelected(True)
                 if hasattr(scene, "_register_template"):
                     scene._register_template(item)
-                scene.validate_all()
+                scene.validate_all(changed_targets=[item])
         elif mime == "textblock":
             item = TextBlockItem("Notiz …")
             item.setPos(pos - QPointF(90, 35))
@@ -2875,7 +3263,7 @@ class Palette(QWidget):
         self.scene_widget.clearSelection()
         item.setSelected(True)
         self.scene_widget._register_template(item)
-        self.scene_widget.validate_all()
+        self.scene_widget.validate_all(changed_targets=[item])
         return item
 
 
@@ -2933,7 +3321,12 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLE)
 
         self.scene = FlowScene()
+        self._auto_validation_actions = []
+        self._validation_debug_actions = []
+        self._validation_debug_enabled = False
+        self._validation_debug_label = None
         self.scene.status_message.connect(self._set_status)
+        self.scene.validation_debug.connect(self._set_validation_debug)
         self.scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         self._build_toolbar()
@@ -2953,7 +3346,7 @@ class MainWindow(QMainWindow):
             ("Speichern (JSON)","Ctrl+S",        self._export_json),
             ("Station",         "Ctrl+1",        self._new_station),
             ("Attribut",        "Ctrl+2",        self._new_attribute),
-            ("Validieren",      "F5",            self.scene.validate_all),
+            ("Validieren",      "F5",            lambda: self.scene.validate_all(force=True)),
             ("Als PDF exportieren", "Ctrl+P",     self._export_pdf),
             ("Alles einpassen", "Ctrl+Shift+F",  self._fit_all),
             ("Zoom 100%",       "Ctrl+0",        self._zoom_reset),
@@ -2962,6 +3355,40 @@ class MainWindow(QMainWindow):
             btn.setShortcut(shortcut)
             btn.triggered.connect(slot)
             tb.addAction(btn)
+
+        tb.addSeparator()
+        auto_validate_switch = QCheckBox("Auto-Validierung")
+        auto_validate_switch.setChecked(self.scene.auto_validate_enabled)
+        auto_validate_switch.toggled.connect(self._set_auto_validation)
+        auto_validate_switch.setStyleSheet(
+            """
+            QCheckBox {
+                color: #E2E8F0;
+                spacing: 8px;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 34px;
+                height: 18px;
+                border-radius: 9px;
+                background: #475569;
+                border: 1px solid #334155;
+            }
+            QCheckBox::indicator:checked {
+                background: #22C55E;
+                border: 1px solid #16A34A;
+            }
+            """
+        )
+        tb.addWidget(auto_validate_switch)
+        self._auto_validation_actions.append(auto_validate_switch)
+
+        validation_debug = QAction("Validierungs-Debug", self)
+        validation_debug.setCheckable(True)
+        validation_debug.setChecked(self._validation_debug_enabled)
+        validation_debug.toggled.connect(self._set_validation_debug_enabled)
+        tb.addAction(validation_debug)
+        self._validation_debug_actions.append(validation_debug)
 
         tb.addSeparator()
         lbl = QLabel("  Entf = ausgewählte Elemente löschen  │  "
@@ -3035,8 +3462,22 @@ class MainWindow(QMainWindow):
         em.addAction(add_attr)
 
         val_act = QAction("Alle Verbindungen validieren", self, shortcut="F5")
-        val_act.triggered.connect(self.scene.validate_all)
+        val_act.triggered.connect(lambda: self.scene.validate_all(force=True))
         em.addAction(val_act)
+
+        auto_validate_act = QAction("Auto-Validierung", self)
+        auto_validate_act.setCheckable(True)
+        auto_validate_act.setChecked(self.scene.auto_validate_enabled)
+        auto_validate_act.toggled.connect(self._set_auto_validation)
+        em.addAction(auto_validate_act)
+        self._auto_validation_actions.append(auto_validate_act)
+
+        debug_act = QAction("Validierungs-Debug anzeigen", self)
+        debug_act.setCheckable(True)
+        debug_act.setChecked(self._validation_debug_enabled)
+        debug_act.toggled.connect(self._set_validation_debug_enabled)
+        em.addAction(debug_act)
+        self._validation_debug_actions.append(debug_act)
 
     def _build_statusbar(self):
         sb = QStatusBar()
@@ -3045,11 +3486,43 @@ class MainWindow(QMainWindow):
             "Bausteine per Drag & Drop auf die Fläche ziehen  –  "
             "Doppelklick auf Station zum Bearbeiten"
         )
+        self._validation_debug_label = QLabel("")
+        self._validation_debug_label.setStyleSheet("color:#94A3B8; font-size:10px; padding-right:6px;")
+        self._validation_debug_label.setVisible(self._validation_debug_enabled)
+        sb.addPermanentWidget(self._validation_debug_label)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _set_status(self, msg: str):
         self.statusBar().showMessage(msg)
+
+    def _set_auto_validation(self, enabled: bool):
+        self.scene.auto_validate_enabled = enabled
+        for action in self._auto_validation_actions:
+            if action.isChecked() != enabled:
+                action.blockSignals(True)
+                action.setChecked(enabled)
+                action.blockSignals(False)
+        self.statusBar().showMessage(
+            "Auto-Validierung aktiviert" if enabled else "Auto-Validierung deaktiviert (F5 für manuelle Validierung)"
+        )
+
+    def _set_validation_debug_enabled(self, enabled: bool):
+        self._validation_debug_enabled = enabled
+        for action in self._validation_debug_actions:
+            if action.isChecked() != enabled:
+                action.blockSignals(True)
+                action.setChecked(enabled)
+                action.blockSignals(False)
+        if self._validation_debug_label is not None:
+            self._validation_debug_label.setVisible(enabled)
+            if not enabled:
+                self._validation_debug_label.clear()
+
+    def _set_validation_debug(self, msg: str):
+        if self._validation_debug_label is None or not self._validation_debug_enabled:
+            return
+        self._validation_debug_label.setText(msg)
 
     def _new(self):
         if QMessageBox.question(
@@ -3073,7 +3546,7 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         item.setSelected(True)
         self.scene._register_template(item)
-        self.scene.validate_all()
+        self.scene.validate_all(changed_targets=[item])
 
     def _new_station(self):
         item = StationItem("Neue Station", type = STATION_TYPE.START if len(self.scene._station_items()) <= 0 else (STATION_TYPE.END if len(self.scene._station_items()) == 1 else STATION_TYPE.NORMAL))
