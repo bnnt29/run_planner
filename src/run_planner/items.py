@@ -263,24 +263,24 @@ class StationItem(ObjectItem):
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _layout(self):
-        # Calculate size based on rules content
-        font = QFont("Consolas", 7)
-        metrics = QFontMetrics(font)
-        
-        # Measure max width needed for rule text
-        max_width = 0
-        if self.rules:
-            for rule in self.rules:
-                rule_text = str(rule)
-                text_width = metrics.horizontalAdvance(rule_text)
-                max_width = max(max_width, text_width)
-        
-        # Set width with padding (8px left + 8px right)
-        padding_h = 16
-        if self.rules and max_width > 0:
-            self._w = min(max(max_width + padding_h, STATION_W), 600)  # max 600px width
-        else:
-            self._w = STATION_W
+        # Calculate width from both rule text and title text.
+        rule_font = QFont("Consolas", 7)
+        rule_metrics = QFontMetrics(rule_font)
+        title_font = QFont("Segoe UI", 9, QFont.Bold)
+        title_metrics = QFontMetrics(title_font)
+
+        max_rule_width = 0
+        for rule in self.rules:
+            max_rule_width = max(max_rule_width, rule_metrics.horizontalAdvance(str(rule)))
+
+        # Rules are drawn with x=8 and right padding; keep extra headroom for anti-aliasing.
+        rules_required_w = max_rule_width + 32
+
+        # Title area reserves badge space and right gap in the header.
+        badge_reserved_w = 58 + 24 if self.type != STATION_TYPE.NORMAL else 12
+        title_required_w = title_metrics.horizontalAdvance(self.name or "") + 10 + badge_reserved_w
+
+        self._w = min(max(STATION_W, rules_required_w, title_required_w), 1200)
         
         # Calculate height based on number of rules
         rows = len(self.rules) if self.rules else 1
@@ -800,6 +800,8 @@ class ConnectionItem(QGraphicsPathItem):
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
 
+        scene = self.scene()
+
         if self.isSelected():
             sel_pen = QPen(QColor("#FCD34D"), 5, Qt.SolidLine, Qt.RoundCap)
             painter.setPen(sel_pen)
@@ -839,9 +841,15 @@ class ConnectionItem(QGraphicsPathItem):
             painter.setPen(QColor("#FCD34D"))
             painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
             painter.drawText(star_rect, Qt.AlignCenter, "*")
-
-    def boundingRect(self) -> QRectF:
-        return super().boundingRect().adjusted(-15, -15, 15, 15)
+        
+        # ATTRIBUTE-Verbindungen optional verbergen
+        if scene is not None and hasattr(scene, 'show_attribute_connections'):
+            if not scene.show_attribute_connections and self._state == CONNECTION_STATE.ATTRIBUTE:
+                self.setVisible(False)
+            else:
+                self.setVisible(True)
+        else:
+            self.setVisible(True)
 
     @staticmethod
     def _point_segment_distance_sq(point: QPointF, a: QPointF, b: QPointF) -> float:
@@ -860,6 +868,11 @@ class ConnectionItem(QGraphicsPathItem):
         return dx * dx + dy * dy
 
     def contains(self, point: QPointF) -> bool:
+        scene = self.scene()
+        if scene is not None and hasattr(scene, 'show_connection_hitboxes') and scene.show_connection_hitboxes:
+            # Toggle aktiv: Connection-Hitboxen deaktivieren (nicht anklickbar)
+            return False
+
         path = self.path()
         if path.isEmpty():
             return False

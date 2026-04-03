@@ -65,7 +65,7 @@ def paint_pdf_clean_editor_page(window, painter: QPainter, printer: QPrinter):
     page_rect = printer.pageRect(QPrinter.DevicePixel)
     for item in window.scene.items():
         if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:
-            item.setVisible(False)
+            item.setVisible(not item.isVisible())
     source = window.scene.itemsBoundingRect().adjusted(-100, -100, 100, 10)
     if source.isEmpty():
         source = window.scene.sceneRect().adjusted(0, 0, -1, -1)
@@ -76,7 +76,7 @@ def paint_pdf_clean_editor_page(window, painter: QPainter, printer: QPrinter):
     window.scene.render(painter, target, source)
     for item in window.scene.items():
         if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:
-            item.setVisible(True)
+            item.setVisible(not item.isVisible())
 def paint_pdf_flow_page(window, painter: QPainter, printer: QPrinter):
     StationItem, _ = _ui_types()
     page_rect = printer.pageRect(QPrinter.DevicePixel)

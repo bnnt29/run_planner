@@ -1,12 +1,24 @@
-"""Extracted validation/scene section from the original monolith.
+"""Validation scene logic extracted from the editor UI.
 
-This module intentionally mirrors the validation scene block content.
+This module is kept independent so the scene validation can be reused
+without importing the full UI module.
 """
 
+import math
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
+from PyQt5.QtCore import *  # noqa: F401,F403
+from PyQt5.QtGui import *  # noqa: F401,F403
+from PyQt5.QtPrintSupport import *  # noqa: F401,F403
+from PyQt5.QtWidgets import *  # noqa: F401,F403
+
 try:
-    from run_planner.ui import *  # noqa: F401,F403
+    from .items import *  # noqa: F401,F403
 except ImportError:
-    from ui import *  # type: ignore # noqa: F401,F403
+    from items import *  # type: ignore # noqa: F401,F403
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SZENE
@@ -373,6 +385,10 @@ class FlowScene(QGraphicsScene):
         self._register_template(item)
 
     def open_station_editor(self, item: StationItem):
+        try:
+            from .ui import StationDialog
+        except ImportError:
+            from ui import StationDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
         dlg    = StationDialog(item, self._connected_attributes(item), parent)
         if dlg.exec_() == QDialog.Accepted:
@@ -386,6 +402,10 @@ class FlowScene(QGraphicsScene):
             self.validate_all(changed_targets=[item])
 
     def open_attribute_editor(self, item: AttributeItem):
+        try:
+            from .ui import AttributeDialog
+        except ImportError:
+            from ui import AttributeDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
         while True:
             dlg = AttributeDialog(item, parent)
@@ -407,6 +427,10 @@ class FlowScene(QGraphicsScene):
             break
 
     def open_connection_editor(self, conn: ConnectionItem):
+        try:
+            from .ui import ConnectionDialog
+        except ImportError:
+            from ui import ConnectionDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
         previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
@@ -427,6 +451,10 @@ class FlowScene(QGraphicsScene):
             self.validate_all(changed_targets=[conn])
 
     def open_text_editor(self, item: TextBlockItem):
+        try:
+            from .ui import TextDialog
+        except ImportError:
+            from ui import TextDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
         dlg    = TextDialog(item, parent)
         if dlg.exec_() == QDialog.Accepted:
