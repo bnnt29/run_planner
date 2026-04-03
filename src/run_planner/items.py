@@ -51,7 +51,7 @@ from collections import deque
 #  GRAFIK-KONSTANTEN
 # ══════════════════════════════════════════════════════════════════════════════
 
-PORT_R         = 7
+PORT_R         = 9
 STATION_W      = 200
 STATION_H_MIN  = 72
 HEADER_H       = 28
@@ -1078,17 +1078,31 @@ class Effect:
 class StationRule:
     conditions: list[Condition] = field(default_factory=list)
     effects: list[Effect] = field(default_factory=list)
+    max_traversals: int = 20
+    rule_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self):
+        if not self.rule_id:
+            self.rule_id = uuid.uuid4().hex
+        try:
+            self.max_traversals = min(1000, max(1, int(self.max_traversals)))
+        except (TypeError, ValueError):
+            self.max_traversals = 20
 
     def clone(self) -> "StationRule":
         return StationRule(
             conditions=[Condition(c.attribute, c.operator, c.value) for c in self.conditions],
             effects=[Effect(e.attribute, e.action, e.value) for e in self.effects],
+            max_traversals=self.max_traversals,
+            rule_id=self.rule_id,
         )
 
     def to_json(self) -> dict:
         return {
             "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
             "effects": [StationItem._serialize_effect(eff) for eff in self.effects],
+            "max_traversals": int(self.max_traversals),
+            "rule_id": self.rule_id,
         }
 
     @classmethod
@@ -1107,12 +1121,20 @@ class StationRule:
             )
             if eff is not None
         ]
-        return StationRule(conditions=conditions, effects=effects)
+        legacy_one_time = bool(data.get("one_time", False))
+        max_traversals = data.get("max_traversals", 1 if legacy_one_time else 20)
+        return StationRule(
+            conditions=conditions,
+            effects=effects,
+            max_traversals=max_traversals,
+            rule_id=data.get("rule_id") or uuid.uuid4().hex,
+        )
 
     def __str__(self) -> str:
         cond_text = " ∧ ".join(str(cond) for cond in self.conditions) if self.conditions else "immer"
         eff_text = ", ".join(str(eff) for eff in self.effects) if self.effects else "keine Effekte"
-        return f"{cond_text} → {eff_text}"
+        traversal_text = f"[{self.max_traversals}x]"
+        return f"{traversal_text} {cond_text} → {eff_text}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

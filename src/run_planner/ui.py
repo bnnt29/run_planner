@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
     QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar, QMenu,
     QSpacerItem, QStatusBar, QFileDialog, QDoubleSpinBox, QRadioButton,
-    QCheckBox,
+    QCheckBox, QSpinBox,
     QButtonGroup
 )
 from PyQt5.QtCore import (
@@ -188,6 +188,12 @@ QPushButton#del_btn {
 }
 QPushButton#del_btn:hover { color: #EF4444; }
 QScrollArea { border: none; background: transparent; }
+QToolTip {
+    background-color: #0F172A;
+    color: #E2E8F0;
+    border: 1px solid #475569;
+    padding: 4px 6px;
+}
 """
 
 def fill_attribute_dropdown(dropdown:QComboBox, selected_attr: AttributeItem, options:list[AttributeItem]={}):
@@ -347,11 +353,20 @@ class RuleRow(QWidget):
         title_row = QHBoxLayout()
         title = QLabel("Regel")
         title.setStyleSheet("color:#94A3B8; font-weight:bold;")
+        title_row.addWidget(title)
+        title_row.addWidget(QLabel("Max. Traversierungen:"))
+        self.max_traversals = QSpinBox()
+        self.max_traversals.setRange(1, 1000)
+        self.max_traversals.setValue(int(getattr(rule, "max_traversals", 20) or 20))
+        self.max_traversals.setFixedWidth(88)
+        self.max_traversals.setToolTip(
+            "Wie oft diese Regel pro Pfadsegment bis zum nächsten Checkpoint maximal traversiert werden darf."
+        )
+        title_row.addWidget(self.max_traversals)
         self.remove_btn = QPushButton("✕")
         self.remove_btn.setObjectName("del_btn")
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.clicked.connect(lambda: self.removed.emit(self))
-        title_row.addWidget(title)
         title_row.addStretch(1)
         title_row.addWidget(self.remove_btn)
         root.addLayout(title_row)
@@ -433,6 +448,8 @@ class RuleRow(QWidget):
         return StationRule(
             conditions=[row.get() for row in self._cond_rows],
             effects=[row.get() for row in self._eff_rows],
+            max_traversals=self.max_traversals.value(),
+            rule_id=getattr(self._rule, "rule_id", None),
         )
 
 
@@ -457,6 +474,16 @@ class SettingsDialog(QDialog):
         target_w = min(max_w, hint.width() + width_margin)
         target_h = min(max_h, hint.height() + height_margin)
         self.resize(target_w, target_h)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            main_window = self.window()
+            if main_window is not None and hasattr(main_window, "deselect_everything"):
+                main_window.deselect_everything()
+            self.reject()
+            event.accept()
+            return
+        super().keyPressEvent(event)
         
 class StationDialog(SettingsDialog):
     def __init__(self, item: StationItem, attribute_options:list[AttributeItem]=[], parent=None):
@@ -711,6 +738,16 @@ class TextDialog(QDialog):
 
     def get_text(self) -> str:
         return self.editor.toPlainText()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            main_window = self.window()
+            if main_window is not None and hasattr(main_window, "deselect_everything"):
+                main_window.deselect_everything()
+            self.reject()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1191,6 +1228,15 @@ class FlowView(QGraphicsView):
         f = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(f, f)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            main_window = self.window()
+            if main_window is not None and hasattr(main_window, "handle_escape_action"):
+                main_window.handle_escape_action()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             scene_item = self.itemAt(event.pos())
@@ -1438,7 +1484,10 @@ class Palette(QWidget):
         self.util_hdr.setText("Pfeil-Analyse")
         reasons = list(getattr(conn, "_invalid_reasons", []) or [])
         if not reasons:
-            reasons = ["Dieser Pfeil ist ungültig, es wurde jedoch keine Detailursache gefunden."]
+            if not conn._state == CONNECTION_STATE.ATTRIBUTE:
+                reasons = ["Dieser Pfeil ist ungültig, es wurde jedoch keine Detailursache gefunden."]
+            else:
+                reasons = ["Dieser Pfeil ist gültig, befindet sich jedoch auf keinem Traversierungspfad."]
         correctness = ""
         match(conn._state):
             case CONNECTION_STATE.VALID:
@@ -1629,6 +1678,12 @@ QStatusBar {
     color: #64748B;
     font-size: 11px;
     border-top: 1px solid #334155;
+}
+QToolTip {
+    background-color: #0F172A;
+    color: #E2E8F0;
+    border: 1px solid #475569;
+    padding: 4px 6px;
 }
 """
 
@@ -2089,6 +2144,28 @@ class MainWindow(QMainWindow):
             self.palette.show_invalid_connection_help(invalid_conn)
         else:
             self.palette.show_default_help()
+
+    def deselect_everything(self):
+        self.scene.clearSelection()
+        self.palette.station_list.clearSelection()
+        self.palette.attribute_list.clearSelection()
+        self.palette.show_default_help()
+
+    def handle_escape_action(self):
+        for widget in QApplication.topLevelWidgets():
+            if not isinstance(widget, QDialog):
+                continue
+            if not widget.isVisible() or widget is self:
+                continue
+            widget.reject()
+        self.deselect_everything()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.handle_escape_action()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     @staticmethod
     def _serialize_condition(cond: Condition) -> dict:
