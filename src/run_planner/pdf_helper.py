@@ -41,7 +41,8 @@ def export_pdf(window):
     try:
         paint_pdf_editor_page(window, painter, printer)
         printer.newPage()
-        paint_pdf_clean_flow_page(window, painter, printer)
+        paint_pdf_clean_editor_page(window, painter, printer)
+        #paint_pdf_clean_flow_page(window, painter, printer)
     finally:
         painter.end()
     window.statusBar().showMessage(f"PDF exportiert: {path}")
@@ -54,11 +55,29 @@ def paint_pdf_editor_page(window, painter: QPainter, printer: QPrinter):
         source = window.scene.sceneRect().adjusted(0, 0, -1, -1)
     target = QRectF(30, 60, page_rect.width() - 60, page_rect.height() - 90)
     painter.translate(printer.pageRect().center())
-    painter.scale(1.1, 1.1)
+    painter.scale(1.05, 1.05)
     painter.translate(-target.width()/2-15, -target.height()/2-15)
     window.scene.render(painter, target, source)
 
-
+def paint_pdf_clean_editor_page(window, painter: QPainter, printer: QPrinter):
+    from  run_planner.items import ConnectionItem as ConnectionItem
+    from  run_planner.items import CONNECTION_STATE as CONNECTION_STATE
+    page_rect = printer.pageRect(QPrinter.DevicePixel)
+    for item in window.scene.items():
+        print(item, isinstance(item, ConnectionItem), getattr(item, "_state", None))
+        if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:
+            item.setVisible(False)
+    source = window.scene.itemsBoundingRect().adjusted(-100, -100, 100, 10)
+    if source.isEmpty():
+        source = window.scene.sceneRect().adjusted(0, 0, -1, -1)
+    target = QRectF(30, 60, page_rect.width() - 60, page_rect.height() - 90)
+    painter.translate(printer.pageRect().center())
+    painter.scale(0.95, 0.95)
+    painter.translate(-target.width()/2-15, -target.height()/2-15)
+    window.scene.render(painter, target, source)
+    for item in window.scene.items():
+        if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:
+            item.setVisible(True)
 def paint_pdf_flow_page(window, painter: QPainter, printer: QPrinter):
     StationItem, _ = _ui_types()
     page_rect = printer.pageRect(QPrinter.DevicePixel)

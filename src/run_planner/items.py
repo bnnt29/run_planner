@@ -707,7 +707,6 @@ class ConnectionItem(QGraphicsPathItem):
     def _rebuild(self):
         if self.src_port is None:
             return
-        self._sync_z_layer()
         start = self.src_port.scene_pos()
         end   = self._drag_end if self._drag_end else (
             self.dst_port.scene_pos() if self.dst_port else start
@@ -754,6 +753,7 @@ class ConnectionItem(QGraphicsPathItem):
         path.cubicTo(c1, c2, end)
         self.setPath(path)
         self._apply_style()
+        self._sync_z_layer()
 
     def update_path(self):
         self._rebuild()
@@ -765,7 +765,6 @@ class ConnectionItem(QGraphicsPathItem):
     def finalize(self, dst_port: Port):
         self.dst_port  = dst_port
         self._drag_end = None
-        self._sync_z_layer()
         self._rebuild()
 
     # ── Style ─────────────────────────────────────────────────────────────────

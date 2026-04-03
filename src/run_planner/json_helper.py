@@ -1,16 +1,19 @@
 """JSON import/export helpers extracted from the original flow editor module."""
 
-import json
+import importlib.util
+import os
+import sys
+import sysconfig
+import json as stdjson
 
 from PyQt5.QtWidgets import QMessageBox
 
-
 def _ui_types():
     try:
-        from .items import AttributeItem, StationItem, TextBlockItem, ConnectionItem, CONNECTION_KIND
+        from .items import AttributeItem, StationItem, TextBlockItem, ConnectionItem
     except ImportError:
-        from items import AttributeItem, StationItem, TextBlockItem, ConnectionItem, CONNECTION_KIND
-    return AttributeItem, StationItem, TextBlockItem, ConnectionItem, CONNECTION_KIND
+        from items import AttributeItem, StationItem, TextBlockItem, ConnectionItem
+    return AttributeItem, StationItem, TextBlockItem, ConnectionItem
 
 
 def export_json(window):
@@ -25,7 +28,7 @@ def export_json(window):
     if not path.lower().endswith(".json"):
         path += ".json"
 
-    AttributeItem, StationItem, TextBlockItem, _, _ = _ui_types()
+    AttributeItem, StationItem, TextBlockItem, _ = _ui_types()
 
     try:
         stations = [i for i in window.scene.items() if isinstance(i, StationItem)]
@@ -49,7 +52,7 @@ def export_json(window):
         }
 
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            stdjson.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         QMessageBox.critical(window, "Speichern fehlgeschlagen", f"JSON konnte nicht gespeichert werden:\n{exc}")
         return
@@ -66,11 +69,11 @@ def import_json(window):
     if not path:
         return
 
-    AttributeItem, StationItem, TextBlockItem, ConnectionItem, CONNECTION_KIND = _ui_types()
+    AttributeItem, StationItem, TextBlockItem, ConnectionItem = _ui_types()
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data = stdjson.load(f)
     except Exception as exc:
         QMessageBox.critical(window, "Laden fehlgeschlagen", f"JSON konnte nicht geladen werden:\n{exc}")
         return
@@ -109,7 +112,8 @@ def import_json(window):
 
     existing_attr_links = set()
     for conn in window.scene._connections:
-        if window.scene._connection_kind(conn) != CONNECTION_KIND.ATTRIBUTE:
+        kind = window.scene._connection_kind(conn)
+        if getattr(kind, "name", "") != "ATTRIBUTE":
             continue
         src_item = conn.src_port.parentItem() if conn.src_port else None
         dst_item = conn.dst_port.parentItem() if conn.dst_port else None

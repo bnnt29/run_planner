@@ -5,12 +5,18 @@ Ablaufplan-Editor  –  PyQt5
 Entry point for the split modules.
 """
 
+import sys
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+pkg_parent = here.parent
+if str(pkg_parent) not in sys.path:
+    sys.path.insert(0, str(pkg_parent))
+
 try:
     from run_planner.ui import MainWindow
 except ImportError:
     from ui import MainWindow
-
-import sys
 
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import QApplication

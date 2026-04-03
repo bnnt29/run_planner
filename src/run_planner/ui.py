@@ -12,7 +12,6 @@ Starten:
 import sys
 sys.setrecursionlimit(10**6)
 import math
-import json
 import os
 import time
 import importlib.util
@@ -94,18 +93,6 @@ except ImportError:
         TextBlockItem,
     )
 
-
-def _load_local_module(module_name: str):
-    try:
-        module = __import__(f"run_planner.{module_name}", fromlist=[module_name])
-    except Exception:
-        module_path = Path(__file__).with_name(f"{module_name}.py")
-        spec = importlib.util.spec_from_file_location(f"{module_name}_local", module_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load helper module: {module_name}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DIALOGE
@@ -2550,25 +2537,25 @@ class MainWindow(QMainWindow):
         return ConnectionItem._resolve_port(item, port_type)
 
     def _export_json(self):
-        json_helpers = _load_local_module("json")
+        import run_planner.json_helper as json_helpers
         return json_helpers.export_json(self)
 
     def _import_json(self):
-        json_helpers = _load_local_module("json")
+        import run_planner.json_helper as json_helpers
         return json_helpers.import_json(self)
 
     def _export_pdf(self):
-        pdf_helpers = _load_local_module("pdf")
+        import run_planner.pdf_helper as pdf_helpers
         return pdf_helpers.export_pdf(self)
 
     def _paint_pdf_editor_page(self, painter: QPainter, printer: QPrinter):
-        pdf_helpers = _load_local_module("pdf")
+        import run_planner.pdf_helper as pdf_helpers
         return pdf_helpers.paint_pdf_editor_page(self, painter, printer)
 
     def _paint_pdf_flow_page(self, painter: QPainter, printer: QPrinter):
-        pdf_helpers = _load_local_module("pdf")
+        import run_planner.pdf_helper as pdf_helpers
         return pdf_helpers.paint_pdf_flow_page(self, painter, printer)
 
     def _paint_pdf_clean_flow_page(self, painter: QPainter, printer: QPrinter):
-        pdf_helpers = _load_local_module("pdf")
+        import run_planner.pdf_helper as pdf_helpers
         return pdf_helpers.paint_pdf_clean_flow_page(self, painter, printer)
