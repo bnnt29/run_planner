@@ -6,6 +6,7 @@ Entry point for the split modules.
 """
 
 import sys
+import argparse
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -23,6 +24,17 @@ from PyQt5.QtWidgets import QApplication
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Ablaufplan-Editor – Load workflow configurations from JSON files"
+    )
+    parser.add_argument(
+        "json_file",
+        nargs="?",
+        default=None,
+        help="Path to JSON configuration file to load"
+    )
+    args = parser.parse_args()
+    
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
@@ -39,7 +51,7 @@ def main():
     pal.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
     app.setPalette(pal)
 
-    win = MainWindow()
+    win = MainWindow(json_path=args.json_file)
     app.aboutToQuit.connect(win.scene.cancel_validation)
     win.show()
     sys.exit(app.exec_())

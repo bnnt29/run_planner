@@ -29,7 +29,7 @@ def export_pdf(window):
         path += ".pdf"
 
     printer = QPrinter()
-    printer.setResolution(125)
+    printer.setResolution(90)
     printer.setOutputFormat(QPrinter.PdfFormat)
     printer.setOutputFileName(path)
     printer.setPageSize(QPrinter.A4)

@@ -1699,7 +1699,7 @@ QToolTip {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, json_path=None):
         super().__init__()
         self.setWindowTitle("Ablaufplan-Editor")
         self.resize(1400, 840)
@@ -1729,7 +1729,14 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_statusbar()
         self._set_validation_action_state(False, False)
-        self._create_start_configuration()
+        
+        # Load JSON file if provided, otherwise create default configuration
+        if json_path:
+            import run_planner.json_helper as json_helpers
+            if not json_helpers.import_json(self, json_path):
+                self._create_start_configuration()
+        else:
+            self._create_start_configuration()
 
     # ── UI-Aufbau ─────────────────────────────────────────────────────────────
 

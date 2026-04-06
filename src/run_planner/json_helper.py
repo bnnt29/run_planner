@@ -59,15 +59,18 @@ def export_json(window):
     window.statusBar().showMessage(f"JSON gespeichert: {path}")
 
 
-def import_json(window):
-    path = window._choose_file(
-        save=False,
-        title="Konfiguration laden",
-        default_name="",
-        name_filter="JSON-Dateien (*.json)",
+def import_json(window, json_file_path=None):
+    if json_file_path:
+        path = json_file_path
+    else:
+        path = window._choose_file(
+            save=False,
+            title="Konfiguration laden",
+            default_name="",
+            name_filter="JSON-Dateien (*.json)",
     )
     if not path:
-        return
+        return False
 
     AttributeItem, StationItem, TextBlockItem, ConnectionItem = _ui_types()
 
@@ -76,7 +79,7 @@ def import_json(window):
             data = stdjson.load(f)
     except Exception as exc:
         QMessageBox.critical(window, "Laden fehlgeschlagen", f"JSON konnte nicht geladen werden:\n{exc}")
-        return
+        return False
 
     window.scene.clear_all()
     window.palette.reset_templates()
@@ -151,3 +154,4 @@ def import_json(window):
 
     window.scene.validate_all()
     window.statusBar().showMessage(f"JSON geladen: {path}")
+    return True
