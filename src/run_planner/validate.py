@@ -566,21 +566,28 @@ class FlowScene(QGraphicsScene):
         scc_nodes = {}
         super_succs = {}
         
-        for station in station_ids:
-            scc_id_map[station] = index_counter
-            scc_nodes[index_counter] = [station]
+        for station_id in station_ids:
+            scc_id_map[station_id] = index_counter
+            scc_nodes[index_counter] = station_id
             index_counter += 1
             
-        for station in station_ids:
-            for conn_key, succ_id in flow_succs.get(station, []):
-                super_succs.setdefault(scc_id_map[station], []).append((conn_key, scc_id_map[succ_id]))
+        for station_id in station_ids:
+            for conn_key, succ_id in flow_succs.get(station_id, []):
+                super_succs.setdefault(scc_id_map[station_id], []).append((conn_key, scc_id_map[succ_id]))
                 
-        for scc in sccs:
-            scc_nodes[index_counter] = []
-            for station in scc:
-                scc_nodes[index_counter].append(station)
-                scc_id_map[station] = index_counter
-            index_counter += 1
+        scc_ids = map(lambda scc: [scc_id_map[s] for s in scc], sccs)
+        
+        for scc in scc_ids:
+            inbounds = []
+            for scc_station in scc:
+                if scc_station in super_succs and super_succs[scc_station][1] not in scc:
+                    scc_id_map[scc_station] = index_counter
+                    scc_nodes[index_counter] = scc_station
+                    super_succs[index_counter] = super_succs.pop(scc_station)
+                    super_succs[index_counter] = [(k, v) for k, v in super_succs[index_counter] if v not in scc]
+                    index_counter += 1
+                
+                
             
 
 
