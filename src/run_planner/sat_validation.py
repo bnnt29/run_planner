@@ -123,7 +123,7 @@ class SatValidationEngine:
     def _collect_rules(self) -> list[_RuleRef]:
         refs: list[_RuleRef] = []
         for station_id, station in self.station_data.items():
-            for idx, rule in enumerate(station.get("rules", [])):
+            for idx, rule in enumerate(station.rules):
                 rid = str(rule.get("rule_id") or f"{station_id}:{idx}")
                 try:
                     limit = min(1000, max(1, int(rule.get("max_traversals", 20) or 20)))

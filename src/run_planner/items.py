@@ -633,9 +633,9 @@ class CONNECTION_COLOR(Enum):
     UNKNOWN = QColor("#94A3B8")
     VALID   = QColor("#22C55E")
     INVALID = QColor("#EF4444")
-    CONDITIONAL_VALID = QColor("#0B0EF5")
-    CONDITIONAL_INVALID = QColor("#9A1DEE")
-    ATTRIBUTE = QColor("#FBBF24")
+    CONDITIONAL_VALID = QColor("#D3FB24")
+    CONDITIONAL_INVALID = QColor("#FB9724")
+    ATTRIBUTE = QColor("#9A1DEE")
 
 class ConnectionItem(QGraphicsPathItem):
     ItemType = QGraphicsItem.UserType + 3

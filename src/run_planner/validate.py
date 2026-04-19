@@ -4,8 +4,6 @@ This module is kept independent so the scene validation can be reused
 without importing the full UI module.
 """
 
-import math
-import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -502,140 +500,6 @@ class FlowScene(QGraphicsScene):
     # Stationen werden während der Traversierung überprüft. Effekte propagieren
     # den Zustand an Nachfolger-Stationen.
     #
-    # Optimierung für zyklische Graphen: Stark verbundene Komponenten (SCCs)
-    # werden identifiziert und zusammengefasst. Dies reduziert Traversierungen
-    # in zyklischen Abschnitten, da alle Knoten in einer SCC letztendlich
-    # denselben Zustand haben werden.
-
-
-    def _find_sccs_tarjan(self, station_ids: list[str], flow_succs: dict[str, list]) -> list[list[str]]:
-        """
-        Findet stark verbundene Komponenten mithilfe von Tarjan's Algorithmus.
-        Gibt eine Liste von SCCs zurück, wobei jede SCC eine Liste von Station-IDs ist.
-        """
-        index_counter = 0
-        index_map: dict[str, int] = {}
-        lowlinks: dict[str, int] = {}
-        stack: list[str] = []
-        on_stack: set[str] = set()
-        sccs: list[list[str]] = []
-
-        def strongconnect(node: str):
-            nonlocal index_counter
-
-            index_map[node] = index_counter
-            lowlinks[node] = index_counter
-            index_counter += 1
-
-            stack.append(node)
-            on_stack.add(node)
-
-            for _, succ_id in flow_succs.get(node, []):
-                if succ_id not in index_map:
-                    strongconnect(succ_id)
-                    lowlinks[node] = min(lowlinks[node], lowlinks[succ_id])
-                elif succ_id in on_stack:
-                    lowlinks[node] = min(lowlinks[node], index_map[succ_id])
-
-            if lowlinks[node] == index_map[node]:
-                scc: list[str] = []
-                while True:
-                    w = stack.pop()
-                    on_stack.discard(w)
-                    scc.append(w)
-                    if w == node:
-                        break
-                sccs.append(scc)
-
-        for node_id in station_ids:
-            if node_id not in index_map:
-                strongconnect(node_id)
-
-        return sccs
-
-
-    def _collapse_sccs_to_super_graph(
-        self,
-        station_ids: list[str],
-        flow_succs: dict[str, list],
-        sccs: list[list[str]],
-    ) -> tuple[dict, dict, dict, dict]:
-        """
-        Fasst SCCs in Super-Knoten zusammen.
-        
-        Gibt zurück:
-        - scc_id_map: station_id -> scc_index (Mapping von Station zu ihrer SCC)
-        - scc_nodes: scc_index -> list[station_id] (Mapping von SCC zu Stationen)
-        - super_succs: scc_index -> [(conn_key, super_succ_index)] (Nachfolger im Super-Graphen)
-        """
-        
-        # Normalize SCC list: every station must occur exactly once.
-        seen_nodes = set()
-        normalized_sccs = []
-        for comp in sccs or []:
-            clean_comp = [sid for sid in comp if sid in station_ids and sid not in seen_nodes]
-            if clean_comp:
-                normalized_sccs.append(clean_comp)
-                seen_nodes.update(clean_comp)
-        for sid in station_ids:
-            if sid not in seen_nodes:
-                normalized_sccs.append([sid])
-                seen_nodes.add(sid)
-
-        scc_id_map = {}
-        scc_nodes = {}
-        node_to_scc_id = {}
-        for scc_idx, comp in enumerate(normalized_sccs):
-            scc_nodes[scc_idx] = list(comp)
-            for sid in comp:
-                scc_id_map[sid] = scc_idx
-                node_to_scc_id[sid] = scc_idx
-
-        # Build condensation graph: keep SCC-crossing edges, deduplicated.
-        super_succs = {idx: [] for idx in scc_nodes.keys()}
-        seen_edges = set()
-        for src_id in station_ids:
-            src_scc = scc_id_map.get(src_id)
-            if src_scc is None:
-                continue
-            for conn_key, dst_id in flow_succs.get(src_id, []):
-                dst_scc = scc_id_map.get(dst_id)
-                if dst_scc is None:
-                    continue
-                edge_sig = (src_scc, int(conn_key), dst_scc)
-                if edge_sig in seen_edges:
-                    continue
-                seen_edges.add(edge_sig)
-                super_succs[src_scc].append((conn_key, dst_scc))
-
-        return scc_id_map, scc_nodes, super_succs, node_to_scc_id
-
-
-    def _build_scc_summary(
-        self,
-        scc: list[str],
-        station_data: dict,
-    ) -> dict:
-        """
-        Erstellt eine Zusammenfassung für eine SCC.
-        Die Zusammenfassung kombiniert die Regeln aller Knoten in der SCC.
-        """
-        combined_rules = []
-        combined_name = f"SCC({', '.join(scc[:3])}{'...' if len(scc) > 3 else ''})"
-        print("Summary for SCC:")
-        print(self.getNamedStationList(scc, station_data, "name"))
-        for station_id in scc:
-            data = station_data.get(station_id, {})
-            for rule in data.get("rules", []):
-                combined_rules.append(rule)
-
-        return {
-            "id": f"_scc_{id(scc)}",
-            "name": combined_name,
-            "type": 0,
-            "rules": combined_rules,
-            "original_stations": scc,
-        }
 
     @staticmethod
     def _snapshot_condition(cond: Condition) -> dict:
@@ -719,25 +583,6 @@ class FlowScene(QGraphicsScene):
                 out[attr_id] = value
         return out
 
-    def getNamedStationList(self, station_ids: list, station_data: dict, at: str) -> list[str]:
-        if not station_ids:
-            return []
-        sum = []
-        if isinstance(station_ids, list) and any([isinstance(sid, list) or isinstance(sid, tuple) for sid in station_ids]):
-            for l in station_ids:
-                sum.append(self.getNamedStationList(l, station_data, at))
-        if station_data is None:
-            return station_ids
-        if not isinstance(station_data, dict):
-            return station_ids
-        sum.append([station_data.get(sid, {}).get(at, sid) for sid in station_ids if not isinstance(sid, list) and not isinstance(sid, tuple)])
-        for s in sum:
-            if (isinstance(s, list) or isinstance(s, tuple)) and len(s)<=0:
-                sum.remove(s)
-        if all(isinstance(s, list) or isinstance(s, tuple) for s in sum) and len(sum)==1:
-            return sum[0]
-        return sum
-
     def _build_validation_snapshot(self, changed_targets=None):
         stations = self._station_items()
         if not stations:
@@ -775,7 +620,6 @@ class FlowScene(QGraphicsScene):
         flow_conn_conditions = {}
         flow_conn_keys = []
         flow_conn_srcdst = {}
-        conn_order = {id(conn): idx for idx, conn in enumerate(self._connections)}
         attribute_conn_keys = []
         invalid_conn_keys = []
 
@@ -802,46 +646,6 @@ class FlowScene(QGraphicsScene):
             flow_conn_srcdst[key] = (src.node_id, dst.node_id)
             flow_conn_conditions[key] = [self._snapshot_condition(cond) for cond in conn.conditions]
             flow_conn_keys.append(key)
-
-        # ─── Stark verbundene Komponenten (SCCs) für zyklische Grafen ──────
-        station_ids = list(station_data.keys())
-        sccs = self._find_sccs_tarjan(station_ids, flow_succs)
-        scc_id_map, scc_nodes, super_succs, node_to_scc_id = self._collapse_sccs_to_super_graph(
-            station_ids, flow_succs, sccs
-        )
-        # SAT wird auf dem Originalgraphen gerechnet. SCC/Condensation-Graph
-        # dienen als Potenz-Graph-Metadaten für Diagnose und spätere Optimierungen.
-        scc_node_to_super_id = {
-            station_id: f"scc_{scc_id_map[station_id]}"
-            for station_id in station_ids
-            if station_id in scc_id_map
-        }
-        scc_super_nodes = {
-            f"scc_{scc_idx}": list(nodes)
-            for scc_idx, nodes in scc_nodes.items()
-        }
-        scc_super_succs = {f"scc_{scc_idx}": [] for scc_idx in scc_nodes.keys()}
-        scc_external_conn_keys = {f"scc_{scc_idx}": set() for scc_idx in scc_nodes.keys()}
-        scc_flow_conn_srcdst = {}
-
-        for src_scc_idx, edges in super_succs.items():
-            src_super_id = f"scc_{src_scc_idx}"
-            for conn_key, dst_scc_idx in edges:
-                dst_super_id = f"scc_{dst_scc_idx}"
-                if src_scc_idx != dst_scc_idx:
-                    scc_super_succs[src_super_id].append((conn_key, dst_super_id))
-                    scc_external_conn_keys[src_super_id].add(conn_key)
-                    scc_external_conn_keys[dst_super_id].add(conn_key)
-                    scc_flow_conn_srcdst[conn_key] = (src_super_id, dst_super_id)
-
-        removed_scc_internal_conns = {}
-        for conn_key, (src_id, dst_id) in flow_conn_srcdst.items():
-            src_scc = scc_id_map.get(src_id)
-            dst_scc = scc_id_map.get(dst_id)
-            if src_scc is not None and src_scc == dst_scc:
-                removed_scc_internal_conns[conn_key] = f"scc_{src_scc}"
-
-        removed_scc_dedup_conns = {}
 
         changed_station_ids = set()
         changed_conn_keys = set()
@@ -910,14 +714,6 @@ class FlowScene(QGraphicsScene):
             "conn_lookup": conn_lookup,
             "station_lookup": station_lookup,
             "connection_kinds": connection_kinds,
-            "scc_node_to_super_id": scc_node_to_super_id,
-            "original_station_data": station_data,
-            "scc_super_nodes": scc_super_nodes,
-            "scc_super_succs": scc_super_succs,
-            "removed_scc_internal_conns": removed_scc_internal_conns,
-            "removed_scc_dedup_conns": removed_scc_dedup_conns,
-            "scc_external_conn_keys": {k: list(v) for k, v in scc_external_conn_keys.items()} if scc_external_conn_keys else {},
-            "scc_flow_conn_srcdst": dict(scc_flow_conn_srcdst),
             "target_conn_keys": list(target_conn_keys),
             "target_checkpoint_ids": list(target_checkpoint_ids),
         }
@@ -985,8 +781,6 @@ class FlowScene(QGraphicsScene):
             conn_lookup = meta["conn_lookup"]
             station_lookup = meta["station_lookup"]
             connection_kinds = meta.get("connection_kinds", {})
-            scc_node_to_super_id = meta.get("scc_node_to_super_id", {})
-            original_station_data = meta.get("original_station_data", {})
             target_conn_keys = set(meta.get("target_conn_keys", []))
             target_checkpoint_ids = set(meta.get("target_checkpoint_ids", []))
             
@@ -999,76 +793,8 @@ class FlowScene(QGraphicsScene):
             checkpoint_levels = dict(self._validation_cache_checkpoint_levels)
             for checkpoint_id in target_checkpoint_ids:
                 checkpoint_levels.pop(checkpoint_id, None)
-            
-            # Markiere entfernte SCC-interne Verbindungen anhand externer SCC-Kanten,
-            # damit sie nicht als UNKNOWN verbleiben.
-            removed_scc_internal_conns = meta.get("removed_scc_internal_conns", {})
-            removed_scc_dedup_conns = meta.get("removed_scc_dedup_conns", {})
-            scc_external_conn_keys = meta.get("scc_external_conn_keys", {})
-            scc_flow_conn_srcdst = meta.get("scc_flow_conn_srcdst", {})
-            if removed_scc_internal_conns:
-                result_checkpoint_levels = result.get("checkpoint_levels", {})
 
-                def _state_rank(state):
-                    # Bessere Zustände haben kleinere Werte.
-                    if state == CONNECTION_STATE.VALID:
-                        return 0
-                    if state == CONNECTION_STATE.CONDITIONAL_VALID:
-                        return 1
-                    if state == CONNECTION_STATE.CONDITIONAL_INVALID:
-                        return 2
-                    if state == CONNECTION_STATE.INVALID:
-                        return 3
-                    return 99
-
-                for conn_key, scc_id in removed_scc_internal_conns.items():
-                    candidate_payloads = []
-                    for external_conn_key in scc_external_conn_keys.get(scc_id, []):
-                        payload = best_states.get(external_conn_key)
-                        if payload is None:
-                            continue
-                        state, reasons = payload
-                        if state == CONNECTION_STATE.UNKNOWN:
-                            continue
-                        candidate_payloads.append((state, reasons))
-
-                    if candidate_payloads:
-                        best_states[conn_key] = min(candidate_payloads, key=lambda item: _state_rank(item[0]))
-                        continue
-
-                    # Fallback: wenn SCC checkpoint-seitig erreicht wurde, wenigstens als validiert markieren.
-                    levels = set(result_checkpoint_levels.get(scc_id, []))
-                    if levels:
-                        if levels == {0}:
-                            best_states[conn_key] = (CONNECTION_STATE.VALID, [])
-                        elif 0 in levels or 1 in levels:
-                            best_states[conn_key] = (CONNECTION_STATE.CONDITIONAL_VALID, [])
-
-            # Deduplizierte SCC-Außenkanten erben den Status ihrer repräsentativen Kante.
-            if removed_scc_dedup_conns:
-                for removed_conn_key, kept_conn_key in removed_scc_dedup_conns.items():
-                    kept_payload = best_states.get(kept_conn_key)
-                    if kept_payload is not None:
-                        best_states[removed_conn_key] = kept_payload
-                    else:
-                        best_states.pop(removed_conn_key, None)
-            
-            # Mapping von SCC Checkpoint Levels zurück zu ursprünglichen Stationen
-            result_checkpoint_levels = result.get("checkpoint_levels", {})
-            if scc_node_to_super_id:
-                # SCC-Mapping existiert, muss zurück gemappt werden
-                mapped_checkpoint_levels = {}
-                for scc_id, levels in result_checkpoint_levels.items():
-                    # Finde alle Original-Stationen, die zu dieser SCC gehören
-                    for original_id, mapped_id in scc_node_to_super_id.items():
-                        if mapped_id == scc_id:
-                            mapped_checkpoint_levels[original_id] = levels
-                    # Falls die SCC_ID selbst ein Original-KN ist (nicht gemappt wurde)
-                    if scc_id not in mapped_checkpoint_levels:
-                        mapped_checkpoint_levels[scc_id] = levels
-                result_checkpoint_levels = mapped_checkpoint_levels
-            
-            checkpoint_levels.update(result_checkpoint_levels)
+            checkpoint_levels.update(result.get("checkpoint_levels", {}))
             self._validation_cache_best_states = best_states
             self._validation_cache_checkpoint_levels = checkpoint_levels
 
@@ -1137,25 +863,11 @@ class FlowScene(QGraphicsScene):
             )
             emit_validation_debug("ok")
 
-            # Erstelle Reverse-Mapping: SCC ID zu Original-Stationen
-            scc_to_original_stations = {}
-            if scc_node_to_super_id:
-                for original_id, scc_id in scc_node_to_super_id.items():
-                    if scc_id not in scc_to_original_stations:
-                        scc_to_original_stations[scc_id] = []
-                    scc_to_original_stations[scc_id].append(original_id)
-
             for station in station_lookup.values():
                 if station.type != STATION_TYPE.END:
                     continue
-                
-                # Prüfe, ob die Station als SCC gemappt wurde
-                scc_id = scc_node_to_super_id.get(station.node_id, station.node_id)
-                levels = set(checkpoint_levels.get(scc_id, []))
-                
-                # Falls noch keine Levels gefunden wurden, prüfe unter Original-ID
-                if not levels:
-                    levels = set(checkpoint_levels.get(station.node_id, []))
+
+                levels = set(checkpoint_levels.get(station.node_id, []))
 
                 # Für die Badge-Farbe zählt der beste erreichbare Level,
                 # nicht die Menge aller beobachteten Levels.
