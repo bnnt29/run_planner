@@ -30,12 +30,12 @@ from PyQt5.QtWidgets import (
     QLineEdit, QComboBox, QGroupBox, QScrollArea, QPlainTextEdit,
     QAction, QMessageBox, QColorDialog, QSizePolicy, QToolBar, QMenu,
     QSpacerItem, QStatusBar, QFileDialog, QDoubleSpinBox, QRadioButton,
-    QCheckBox, QSpinBox,
+    QCheckBox, QSpinBox, QTreeWidget, QTreeWidgetItem,
     QButtonGroup
 )
 from PyQt5.QtCore import (
     Qt, QRectF, QPointF, QLineF, QPoint, QRect, pyqtSignal, QMimeData,
-    QSizeF
+    QSizeF, QEvent
 )
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QFont, QLinearGradient, QRadialGradient,
@@ -68,6 +68,7 @@ try:
         Effect,
         StationRule,
         TextBlockItem,
+        NoteLinkItem,
     )
 except ImportError:
     from items import (
@@ -91,6 +92,7 @@ except ImportError:
         Effect,
         StationRule,
         TextBlockItem,
+        NoteLinkItem,
     )
 
 try:
@@ -363,6 +365,15 @@ class RuleRow(QWidget):
             "Wie oft diese Regel pro Pfadsegment bis zum nächsten Checkpoint maximal traversiert werden darf."
         )
         title_row.addWidget(self.max_traversals)
+        title_row.addWidget(QLabel("Regelgruppe:"))
+        self.group_number = QSpinBox()
+        self.group_number.setRange(1, 1)
+        self.group_number.setValue(int(getattr(rule, "group_number", 1) or 1))
+        self.group_number.setFixedWidth(96)
+        self.group_number.setToolTip(
+            "Regeln mit derselben Gruppennummer können im Gruppenmodus gemeinsam angewendet werden."
+        )
+        title_row.addWidget(self.group_number)
         self.remove_btn = QPushButton("✕")
         self.remove_btn.setObjectName("del_btn")
         self.remove_btn.setFixedSize(22, 22)
@@ -444,11 +455,17 @@ class RuleRow(QWidget):
         self._eff_vbox.removeWidget(row)
         row.deleteLater()
 
+    def set_group_max(self, max_group_number: int):
+        max_group_number = max(1, int(max_group_number))
+        self.group_number.setRange(1, max_group_number)
+        self.group_number.setValue(min(self.group_number.value(), max_group_number))
+
     def result_data(self) -> StationRule:
         return StationRule(
             conditions=[row.get() for row in self._cond_rows],
             effects=[row.get() for row in self._eff_rows],
             max_traversals=self.max_traversals.value(),
+            group_number=self.group_number.value(),
             rule_id=getattr(self._rule, "rule_id", None),
         )
 
@@ -573,10 +590,13 @@ class StationDialog(SettingsDialog):
             self._refresh_color_btn()
 
     def _add_rule(self, rule: StationRule, allow_attribute_rules: bool = True):
+        if getattr(rule, "group_number", None) is None or int(getattr(rule, "group_number", 1) or 1) < 1:
+            rule.group_number = max(1, len(self._rule_rows) + 1)
         row = RuleRow(rule, self._attribute_options, allow_attribute_rules=allow_attribute_rules)
         row.removed.connect(self._rm_rule)
         self._rule_rows.append(row)
         self._rule_vbox.addWidget(row)
+        self._sync_rule_group_limits()
 
     def _rm_rule(self, row: RuleRow):
         self._rule_rows.remove(row)
@@ -584,6 +604,12 @@ class StationDialog(SettingsDialog):
         row.deleteLater()
         if not self._rule_rows:
             self._add_rule(StationRule())
+        self._sync_rule_group_limits()
+
+    def _sync_rule_group_limits(self):
+        max_group_number = max(1, len(self._rule_rows))
+        for row in self._rule_rows:
+            row.set_group_max(max_group_number)
 
     def result_data(self):
         selected_type = STATION_TYPE.NORMAL
@@ -672,6 +698,13 @@ class ConnectionDialog(SettingsDialog):
         info.setWordWrap(True)
         root.addWidget(info)
 
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Pfadname:"))
+        self.path_name = QLineEdit(getattr(conn, "name", ""))
+        self.path_name.setPlaceholderText("Optionaler Anzeigename")
+        name_row.addWidget(self.path_name, 1)
+        root.addLayout(name_row)
+
         grp = QGroupBox("Bedingungen an dieser Verbindung")
         vg = QVBoxLayout(grp)
         self.scroll, self.inner, self.vbox = StationDialog._make_scroll()
@@ -713,7 +746,10 @@ class ConnectionDialog(SettingsDialog):
         self.conditions_changed.emit()
 
     def result_data(self):
-        return [row.get() for row in self._cond_rows]
+        return {
+            "name": self.path_name.text().strip(),
+            "conditions": [row.get() for row in self._cond_rows],
+        }
 
 
 class TextDialog(QDialog):
@@ -776,6 +812,7 @@ class FlowScene(ValidationFlowScene):
         self._validation_cache_best_states = {}
         self._validation_cache_checkpoint_levels = {}
         self.validation_result_ready.connect(self._apply_validation_result)
+        self._note_links: list[NoteLinkItem] = []
 
         self.show_connection_hitboxes = False
         self.show_attribute_connections = True
@@ -898,20 +935,124 @@ class FlowScene(ValidationFlowScene):
             return item.in_port if self._can_connect(src_port, item.in_port) else None
         return None
 
+    def _cleanup_text_links_for_node(self, node_id: str):
+        if not node_id:
+            return
+        for item in self.items():
+            if isinstance(item, TextBlockItem) and node_id in item.linked_node_ids:
+                item.linked_node_ids.discard(node_id)
+        self._remove_note_links_for_node(node_id)
+
+    def _find_item_by_node_id(self, node_id: str):
+        if not node_id:
+            return None
+        for item in self.items():
+            if hasattr(item, "node_id") and getattr(item, "node_id", None) == node_id:
+                return item
+        return None
+
+    def _remove_note_link(self, link: NoteLinkItem):
+        if link in self._note_links:
+            self._note_links.remove(link)
+        if link.scene() is self:
+            self.removeItem(link)
+
+    def _remove_note_links_for_node(self, node_id: str):
+        for link in list(self._note_links):
+            if link.src_node_id == node_id or link.dst_node_id == node_id:
+                self._remove_note_link(link)
+
+    def _note_link_exists(self, src_node_id: str, dst_node_id: str) -> bool:
+        for link in self._note_links:
+            if link.src_node_id == src_node_id and link.dst_node_id == dst_node_id:
+                return True
+        return False
+
+    def _ensure_note_link(self, text_item: TextBlockItem, dst_item):
+        src_node_id = getattr(text_item, "node_id", None)
+        dst_node_id = getattr(dst_item, "node_id", None)
+        if not src_node_id or not dst_node_id:
+            return
+        if self._note_link_exists(src_node_id, dst_node_id):
+            return
+        link = NoteLinkItem(text_item, dst_item)
+        self._note_links.append(link)
+        self.addItem(link)
+
+    def rebuild_note_links(self):
+        for link in list(self._note_links):
+            self._remove_note_link(link)
+
+        for item in self.items():
+            if not isinstance(item, TextBlockItem):
+                continue
+            stale = set()
+            for node_id in list(item.linked_node_ids):
+                dst_item = self._find_item_by_node_id(node_id)
+                if dst_item is None or dst_item is item:
+                    stale.add(node_id)
+                    continue
+                self._ensure_note_link(item, dst_item)
+            item.linked_node_ids -= stale
+
+    def _refresh_note_links_for_item(self, item):
+        if item is None:
+            return
+        node_id = getattr(item, "node_id", None)
+        if not node_id:
+            return
+        for link in self._note_links:
+            if link.src_node_id == node_id or link.dst_node_id == node_id:
+                link.update_path()
+
+    def _link_textblock_to_selected(self, text_item: TextBlockItem) -> int:
+        candidates = [
+            item for item in self.selectedItems()
+            if isinstance(item, (StationItem, AttributeItem)) and item is not text_item
+        ]
+        added = 0
+        for candidate in candidates:
+            node_id = getattr(candidate, "node_id", None)
+            if not node_id:
+                continue
+            if node_id in text_item.linked_node_ids:
+                continue
+            text_item.linked_node_ids.add(node_id)
+            self._ensure_note_link(text_item, candidate)
+            added += 1
+        return added
+
+    def _link_selected_textblocks_to_node(self, node_item) -> int:
+        if not isinstance(node_item, (StationItem, AttributeItem)):
+            return 0
+        linked = 0
+        for candidate in self.selectedItems():
+            if not isinstance(candidate, TextBlockItem):
+                continue
+            if getattr(node_item, "node_id", None) in candidate.linked_node_ids:
+                continue
+            candidate.linked_node_ids.add(node_item.node_id)
+            self._ensure_note_link(candidate, node_item)
+            linked += 1
+        return linked
+
     def _delete_scene_item(self, item):
         if isinstance(item, ConnectionItem):
             self._remove_conn(item)
         elif isinstance(item, StationItem):
+            self._cleanup_text_links_for_node(item.node_id)
             for c in list(item.all_connections()):
                 self._remove_conn(c)
             self.removeItem(item)
         elif isinstance(item, AttributeItem):
+            self._cleanup_text_links_for_node(item.node_id)
             for station in self._station_items():
                 self._remove_related_conditions_for_attribute(item, station)
             for c in list(item.all_connections()):
                 self._remove_conn(c)
             self.removeItem(item)
         elif isinstance(item, TextBlockItem):
+            self._cleanup_text_links_for_node(item.node_id)
             self.removeItem(item)
         self.validate_all(changed_targets=[item])
 
@@ -929,8 +1070,35 @@ class FlowScene(ValidationFlowScene):
             return
 
         menu = QMenu()
+        link_action = None
+        link_note_to_node_action = None
+        clear_links_action = None
+        if isinstance(item, TextBlockItem):
+            link_action = menu.addAction("Mit Auswahl verknüpfen")
+            clear_links_action = menu.addAction("Alle Verknüpfungen lösen")
+            menu.addSeparator()
+        elif isinstance(item, (StationItem, AttributeItem)):
+            link_note_to_node_action = menu.addAction("Ausgewählte Notizen mit diesem Knoten verknüpfen")
+            menu.addSeparator()
         delete_action = menu.addAction("Löschen")
         chosen = menu.exec_(event.screenPos())
+        if chosen == link_action and isinstance(item, TextBlockItem):
+            linked = self._link_textblock_to_selected(item)
+            self.status_message.emit(f"Notiz-Verknüpfungen erstellt: {linked}")
+            event.accept()
+            return
+        if chosen == link_note_to_node_action and isinstance(item, (StationItem, AttributeItem)):
+            linked = self._link_selected_textblocks_to_node(item)
+            self.status_message.emit(f"Notiz-Verknüpfungen erstellt: {linked}")
+            event.accept()
+            return
+        if chosen == clear_links_action and isinstance(item, TextBlockItem):
+            removed = len(item.linked_node_ids)
+            item.linked_node_ids.clear()
+            self._remove_note_links_for_node(item.node_id)
+            self.status_message.emit(f"Notiz-Verknüpfungen entfernt: {removed}")
+            event.accept()
+            return
         if chosen == delete_action:
             self._delete_scene_item(item)
             event.accept()
@@ -1000,14 +1168,17 @@ class FlowScene(ValidationFlowScene):
                 if isinstance(item, ConnectionItem):
                     self._remove_conn(item)
                 elif isinstance(item, StationItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     for c in list(item.all_connections()):
                         self._remove_conn(c)
                     self.removeItem(item)
                 elif isinstance(item, AttributeItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     for c in list(item.all_connections()):
                         self._remove_conn(c)
                     self.removeItem(item)
                 elif isinstance(item, TextBlockItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     self.removeItem(item)
             self.validate_all(changed_targets=deleted_items)
         super().keyPressEvent(event)
@@ -1092,6 +1263,10 @@ class FlowScene(ValidationFlowScene):
 
         return removed
 
+    def clear_all(self):
+        self._note_links.clear()
+        super().clear_all()
+
     def update_connections_for(self, item):
         if item is None:
             return
@@ -1120,6 +1295,9 @@ class FlowScene(ValidationFlowScene):
         for current in affected:
             for conn in current.all_connections() if hasattr(current, "all_connections") else []:
                 conn.update_path()
+
+        for current in affected:
+            self._refresh_note_links_for_item(current)
 
     # ── Editoren ─────────────────────────────────────────────────────────────
 
@@ -1163,19 +1341,25 @@ class FlowScene(ValidationFlowScene):
     def open_connection_editor(self, conn: ConnectionItem):
         parent = self.views()[0] if self.views() else None
         previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
+        previous_name = conn.name
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
 
         def _preview_validate():
-            conn.conditions = dlg.result_data()
+            data = dlg.result_data()
+            conn.name = data["name"]
+            conn.conditions = data["conditions"]
             conn.update()
             self.validate_all(changed_targets=[conn])
 
         dlg.conditions_changed.connect(_preview_validate)
         if dlg.exec_() == QDialog.Accepted:
-            conn.conditions = dlg.result_data()
+            data = dlg.result_data()
+            conn.name = data["name"]
+            conn.conditions = data["conditions"]
             conn.update()
             self.validate_all(changed_targets=[conn])
         else:
+            conn.name = previous_name
             conn.conditions = previous_conditions
             conn.update()
             self.validate_all(changed_targets=[conn])
@@ -1714,7 +1898,16 @@ class MainWindow(QMainWindow):
         self._validation_pending = False
         self._validation_debug_actions = []
         self._validation_debug_enabled = False
+        self._validation_progress_label = None
         self._validation_debug_label = None
+        self._reachability_panel = None
+        self._reachability_toggle_btn = None
+        self._reachability_header_separator = None
+        self._reachability_content = None
+        self._reachability_title = None
+        self._reachability_tree = None
+        self._reachability_collapsed = True
+        self._reachability_header_text = "Traversal-Pfade"
         self._show_connection_hitboxes_actions = []
         self._show_connection_hitboxes = False
         self._show_attribute_connections_actions = []
@@ -1726,6 +1919,7 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._build_central()
+        self._build_reachability_panel()
         self._build_menu()
         self._build_statusbar()
         self._set_validation_action_state(False, False)
@@ -1735,6 +1929,8 @@ class MainWindow(QMainWindow):
             import run_planner.json_helper as json_helpers
             if not json_helpers.import_json(self, json_path):
                 self._create_start_configuration()
+            else:
+                self._fit_all()
         else:
             self._create_start_configuration()
 
@@ -1987,6 +2183,302 @@ class MainWindow(QMainWindow):
         em.addAction(attr_conn_act)
         self._show_attribute_connections_actions.append(attr_conn_act)
 
+    def _build_reachability_panel(self):
+        panel = QFrame(self.view.viewport())
+        panel.setObjectName("reachability_panel")
+        panel.setStyleSheet(
+            """
+            QFrame#reachability_panel {
+                background: rgba(15, 23, 42, 230);
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+            """
+        )
+        panel.setFixedWidth(360)
+        panel.setMaximumHeight(360)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(6)
+
+        toggle_btn = QPushButton("▸ Traversal-Pfade")
+        toggle_btn.setObjectName("reachability_toggle")
+        toggle_btn.setStyleSheet(
+            """
+            QPushButton#reachability_toggle {
+                background: transparent;
+                color: #E2E8F0;
+                border: none;
+                text-align: left;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 2px 0;
+            }
+            QPushButton#reachability_toggle:hover {
+                color: #F8FAFC;
+            }
+            """
+        )
+        toggle_btn.clicked.connect(lambda: self._set_reachability_collapsed(not self._reachability_collapsed))
+        layout.addWidget(toggle_btn)
+
+        header_separator = QFrame(panel)
+        header_separator.setFrameShape(QFrame.HLine)
+        header_separator.setFrameShadow(QFrame.Plain)
+        header_separator.setStyleSheet("color: #334155;")
+        header_separator.setFixedHeight(1)
+        layout.addWidget(header_separator)
+
+        content = QWidget(panel)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+
+        tree = QTreeWidget(panel)
+        tree.setHeaderHidden(True)
+        tree.setRootIsDecorated(True)
+        tree.setUniformRowHeights(False)
+        tree.setStyleSheet(
+            """
+            QTreeWidget {
+                background: transparent;
+                color: #CBD5E1;
+                border: none;
+                outline: none;
+                font-size: 11px;
+            }
+            QTreeWidget::item {
+                padding: 2px 0;
+            }
+            QTreeWidget::item:selected {
+                background: #1E293B;
+                color: #F8FAFC;
+            }
+            """
+        )
+        tree.itemClicked.connect(self._on_reachability_item_clicked)
+        tree.itemDoubleClicked.connect(self._on_reachability_item_double_clicked)
+        content_layout.addWidget(tree, 1)
+
+        layout.addWidget(content, 1)
+
+        self._reachability_panel = panel
+        self._reachability_toggle_btn = toggle_btn
+        self._reachability_header_separator = header_separator
+        self._reachability_content = content
+        self._reachability_title = None
+        self._reachability_tree = tree
+        self.view.viewport().installEventFilter(self)
+        self._reachability_panel.hide()
+        self._set_reachability_collapsed(True)
+        self._set_reachability_header(self._reachability_header_text)
+        self._set_reachability_placeholder("Wähle einen Start- oder Endknoten aus.")
+        self._reposition_reachability_panel()
+
+    def _set_reachability_header(self, text: str):
+        self._reachability_header_text = (text or "Traversal-Pfade").strip() or "Traversal-Pfade"
+        if self._reachability_toggle_btn is not None:
+            prefix = "▸" if self._reachability_collapsed else "▾"
+            self._reachability_toggle_btn.setText(f"{prefix} {self._reachability_header_text}")
+
+    def _set_reachability_visible(self, visible: bool):
+        if self._reachability_panel is None:
+            return
+        self._reachability_panel.setVisible(bool(visible))
+        if visible:
+            self._reposition_reachability_panel()
+
+    def _set_reachability_collapsed(self, collapsed: bool):
+        self._reachability_collapsed = bool(collapsed)
+        self._set_reachability_header(self._reachability_header_text)
+        if self._reachability_content is not None:
+            self._reachability_content.setVisible(not self._reachability_collapsed)
+        if self._reachability_header_separator is not None:
+            self._reachability_header_separator.setVisible(not self._reachability_collapsed)
+        self._reposition_reachability_panel()
+
+    def eventFilter(self, obj, event):
+        if obj is self.view.viewport() and event.type() == QEvent.Resize:
+            self._reposition_reachability_panel()
+        return super().eventFilter(obj, event)
+
+    def _reposition_reachability_panel(self):
+        if self._reachability_panel is None or self.view is None:
+            return
+        vp = self.view.viewport()
+        margin = 12
+        width = self._reachability_panel.width()
+        if self._reachability_collapsed:
+            self._reachability_panel.setFixedHeight(40)
+        else:
+            max_h = int(vp.height() * 0.45)
+            panel_h = min(max_h, 320)
+            self._reachability_panel.setFixedHeight(max(140, panel_h))
+        x = max(margin, vp.width() - width - margin)
+        y = max(margin, vp.height() - self._reachability_panel.height() - margin)
+        self._reachability_panel.move(x, y)
+
+    def _set_reachability_placeholder(self, message: str):
+        if self._reachability_tree is None:
+            return
+        self._reachability_tree.clear()
+        placeholder = QTreeWidgetItem([message])
+        self._reachability_tree.addTopLevelItem(placeholder)
+
+    def _flow_successors_for_reachability(self) -> dict[str, list[str]]:
+        succs: dict[str, list[str]] = {}
+        seen_any_flow = False
+        seen_valid_flow = False
+
+        for conn in self.scene._connections:
+            kind = self.scene._connection_kind(conn)
+            if kind != CONNECTION_KIND.FLOW:
+                continue
+            seen_any_flow = True
+
+            src = conn.src_port.parentItem() if conn.src_port else None
+            dst = conn.dst_port.parentItem() if conn.dst_port else None
+            if not isinstance(src, StationItem) or not isinstance(dst, StationItem):
+                continue
+
+            state = getattr(conn, "_state", CONNECTION_STATE.UNKNOWN)
+            is_validated = state in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID)
+            if is_validated:
+                seen_valid_flow = True
+            succs.setdefault(src.node_id, []).append((dst.node_id, is_validated))
+
+        if not seen_any_flow:
+            return {}
+
+        use_validated_only = seen_valid_flow
+        out: dict[str, list[str]] = {}
+        for src_id, edges in succs.items():
+            filtered = [dst_id for dst_id, is_valid in edges if (is_valid or not use_validated_only)]
+            if filtered:
+                out[src_id] = filtered
+        return out
+
+    def _find_paths(self, start_id: str, target_id: str, succs: dict[str, list[str]], max_paths: int = 8) -> list[list[str]]:
+        stations = self.scene._station_items()
+        max_depth = max(2, len(stations) * 2)
+        paths: list[list[str]] = []
+        stack: list[tuple[str, list[str]]] = [(start_id, [start_id])]
+
+        while stack and len(paths) < max_paths:
+            node_id, path = stack.pop()
+            if node_id == target_id and len(path) > 1:
+                paths.append(path)
+                continue
+            if len(path) >= max_depth:
+                continue
+
+            for nxt in reversed(succs.get(node_id, [])):
+                if nxt in path:
+                    continue
+                stack.append((nxt, path + [nxt]))
+
+        return paths
+
+    def _station_name_by_id(self, station_id: str) -> str:
+        for station in self.scene._station_items():
+            if station.node_id == station_id:
+                return station.name
+        return station_id
+
+    def _station_item_by_id(self, station_id: str) -> StationItem | None:
+        for station in self.scene._station_items():
+            if station.node_id == station_id:
+                return station
+        return None
+
+    def _populate_reachability_tree(self, title: str, grouped_paths: list[tuple[str, list[list[str]]]]):
+        if self._reachability_tree is None or self._reachability_panel is None:
+            return
+        self._set_reachability_header(title)
+        self._reachability_tree.clear()
+
+        for node_id, paths in grouped_paths:
+            label = f"{self._station_name_by_id(node_id)} ({len(paths)} Pfade)"
+            top = QTreeWidgetItem([label])
+            top.setData(0, Qt.UserRole, node_id)
+            for idx, path in enumerate(paths, start=1):
+                path_item = QTreeWidgetItem([f"Pfad {idx}"])
+                for sid in path:
+                    station_item = QTreeWidgetItem([self._station_name_by_id(sid)])
+                    station_item.setData(0, Qt.UserRole, sid)
+                    path_item.addChild(station_item)
+                top.addChild(path_item)
+            top.setExpanded(False)
+            self._reachability_tree.addTopLevelItem(top)
+
+        if self._reachability_tree.topLevelItemCount() <= 0:
+            self._set_reachability_placeholder("Keine Pfade gefunden.")
+        self._set_reachability_visible(True)
+        self._reposition_reachability_panel()
+
+    def _on_reachability_item_clicked(self, item: QTreeWidgetItem, column: int):
+        if item is None:
+            return
+        if item.parent() is None:
+            item.setExpanded(not item.isExpanded())
+
+    def _on_reachability_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        if item is None:
+            return
+        station_id = item.data(0, Qt.UserRole)
+        if not station_id:
+            return
+        station = self._station_item_by_id(str(station_id))
+        if station is None:
+            return
+
+        self.scene.clearSelection()
+        station.setSelected(True)
+        self.scene.open_station_editor(station)
+
+    def _update_reachability_panel(self, selected_stations: list[StationItem]):
+        if self._reachability_panel is None:
+            return
+
+        if len(selected_stations) != 1:
+            self._set_reachability_visible(False)
+            return
+
+        selected = selected_stations[0]
+        succs = self._flow_successors_for_reachability()
+        if not succs:
+            self._set_reachability_header("Traversal-Pfade")
+            self._set_reachability_placeholder("Keine FLOW-Verbindungen vorhanden.")
+            self._set_reachability_visible(True)
+            return
+
+        stations = self.scene._station_items()
+        starts = [s for s in stations if s.type == STATION_TYPE.START]
+        ends = [s for s in stations if s.type == STATION_TYPE.END]
+
+        grouped: list[tuple[str, list[list[str]]]] = []
+        if selected.type == STATION_TYPE.START:
+            for end in ends:
+                paths = self._find_paths(selected.node_id, end.node_id, succs)
+                if paths:
+                    grouped.append((end.node_id, paths))
+            grouped.sort(key=lambda item: self._station_name_by_id(item[0]).lower())
+            self._populate_reachability_tree(selected.name, grouped)
+            return
+
+        if selected.type == STATION_TYPE.END:
+            for start in starts:
+                paths = self._find_paths(start.node_id, selected.node_id, succs)
+                if paths:
+                    grouped.append((start.node_id, paths))
+            grouped.sort(key=lambda item: self._station_name_by_id(item[0]).lower())
+            self._populate_reachability_tree(selected.name, grouped)
+            return
+
+        self._set_reachability_placeholder("Wähle einen Start- oder Endknoten aus.")
+        self._set_reachability_visible(False)
+
     def _build_statusbar(self):
         sb = QStatusBar()
         self.setStatusBar(sb)
@@ -1994,6 +2486,9 @@ class MainWindow(QMainWindow):
             "Bausteine per Drag & Drop auf die Fläche ziehen  –  "
             "Doppelklick auf Station zum Bearbeiten"
         )
+        self._validation_progress_label = QLabel("")
+        self._validation_progress_label.setStyleSheet("color:#CBD5E1; font-size:11px; padding-right:10px;")
+        sb.addPermanentWidget(self._validation_progress_label)
         self._validation_debug_label = QLabel("")
         self._validation_debug_label.setStyleSheet("color:#94A3B8; font-size:10px; padding-right:6px;")
         self._validation_debug_label.setVisible(self._validation_debug_enabled)
@@ -2001,7 +2496,15 @@ class MainWindow(QMainWindow):
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
+    def _set_validation_progress_text(self, msg: str):
+        if self._validation_progress_label is None:
+            return
+        self._validation_progress_label.setText(msg or "")
+
     def _set_status(self, msg: str):
+        if isinstance(msg, str) and (msg.startswith("Validierung läuft") or msg.startswith("Validierung wird abgebrochen")):
+            self._set_validation_progress_text(msg)
+            return
         self.statusBar().showMessage(msg)
 
     def _set_auto_validation(self, enabled: bool):
@@ -2050,9 +2553,9 @@ class MainWindow(QMainWindow):
             self._validation_toolbar_button.update()
 
         if busy:
-            self.statusBar().showMessage(
-                "Validierung läuft ..." if running else "Validierung ist eingeplant ..."
-            )
+            self._set_validation_progress_text("Validierung läuft ..." if running else "Validierung ist eingeplant ...")
+        else:
+            self._set_validation_progress_text("")
 
     def _set_show_connection_hitboxes(self, enabled: bool):
         self._show_connection_hitboxes = enabled
@@ -2214,6 +2717,8 @@ class MainWindow(QMainWindow):
         else:
             self.palette.show_default_help()
 
+        self._update_reachability_panel(selected_stations)
+
     def deselect_everything(self):
         self.scene.clearSelection()
         self.palette.station_list.clearSelection()
@@ -2266,7 +2771,10 @@ class MainWindow(QMainWindow):
 
     def _import_json(self):
         import run_planner.json_helper as json_helpers
-        return json_helpers.import_json(self)
+        loaded = json_helpers.import_json(self)
+        if loaded:
+            self._fit_all()
+        return loaded
 
     def _export_pdf(self):
         import run_planner.pdf_helper as pdf_helpers

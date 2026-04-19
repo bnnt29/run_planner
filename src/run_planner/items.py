@@ -640,11 +640,12 @@ class CONNECTION_COLOR(Enum):
 class ConnectionItem(QGraphicsPathItem):
     ItemType = QGraphicsItem.UserType + 3
 
-    def __init__(self, src_port: Port, dst_port: Port = None):
+    def __init__(self, src_port: Port, dst_port: Port = None, name: str = ""):
         super().__init__()
         self.src_port:Port   = src_port
         self.dst_port:Port   = dst_port
         self.conditions:list[Condition] = []
+        self.name: str = (name or "").strip()
         self._invalid_reasons = []
         self._state:CONNECTION_STATE = CONNECTION_STATE.UNKNOWN
         self._highlighted = False
@@ -853,6 +854,20 @@ class ConnectionItem(QGraphicsPathItem):
             painter.setPen(QColor("#FCD34D"))
             painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
             painter.drawText(star_rect, Qt.AlignCenter, "*")
+
+        if self.name:
+            mid = path.pointAtPercent(0.5)
+            text = self.name
+            metrics = QFontMetrics(QFont("Segoe UI", 8, QFont.Bold))
+            text_w = metrics.horizontalAdvance(text)
+            text_h = max(14, metrics.height())
+            label_rect = QRectF(mid.x() - (text_w / 2) - 6, mid.y() + 6, text_w + 12, text_h)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(15, 23, 42, 220)))
+            painter.drawRoundedRect(label_rect, 4, 4)
+            painter.setPen(QColor("#E2E8F0"))
+            painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            painter.drawText(label_rect, Qt.AlignCenter, text)
         
         # ATTRIBUTE-Verbindungen optional verbergen
         if scene is not None and hasattr(scene, 'show_attribute_connections'):
@@ -945,6 +960,7 @@ class ConnectionItem(QGraphicsPathItem):
             "src_port_type": self.src_port.port_type.value if self.src_port else None,
             "dst_node_id": getattr(self.dst_port.parentItem(), "node_id", None) if self.dst_port else None,
             "dst_port_type": self.dst_port.port_type.value if self.dst_port else None,
+            "name": self.name,
             "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
         }
 
@@ -960,7 +976,7 @@ class ConnectionItem(QGraphicsPathItem):
         if src_port is None or dst_port is None:
             return None
 
-        conn = cls(src_port)
+        conn = cls(src_port, name=data.get("name", ""))
         conn.conditions = [cond for cond in (StationItem._deserialize_condition(cond, node_map) for cond in data.get("conditions", [])) if cond is not None]
         conn.finalize(dst_port)
         src_port.connections.append(conn)
@@ -971,6 +987,55 @@ class ConnectionItem(QGraphicsPathItem):
             dst_item._layout()
         conn.update_path()
         return conn
+
+
+class NoteLinkItem(QGraphicsPathItem):
+    ItemType = QGraphicsItem.UserType + 5
+
+    def __init__(self, src_item: "TextBlockItem", dst_item: QGraphicsItem):
+        super().__init__()
+        self.src_item = src_item
+        self.dst_item = dst_item
+        self.setZValue(-20)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self._apply_style()
+        self.update_path()
+
+    def _apply_style(self):
+        self.setPen(QPen(QColor("#94A3B8"), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+
+    @staticmethod
+    def _item_center(item: QGraphicsItem) -> QPointF:
+        return item.mapToScene(item.boundingRect().center())
+
+    def update_path(self):
+        if self.src_item is None or self.dst_item is None:
+            return
+        start = self._item_center(self.src_item)
+        end = self._item_center(self.dst_item)
+
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        cp = max(30.0, min(160.0, math.hypot(dx, dy) * 0.35))
+        c1 = QPointF(start.x() + cp, start.y())
+        c2 = QPointF(end.x() - cp, end.y())
+
+        path = QPainterPath(start)
+        path.cubicTo(c1, c2, end)
+        self.setPath(path)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        super().paint(painter, option, widget)
+
+    @property
+    def src_node_id(self) -> str | None:
+        return getattr(self.src_item, "node_id", None)
+
+    @property
+    def dst_node_id(self) -> str | None:
+        return getattr(self.dst_item, "node_id", None)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATENMODELLE
@@ -1088,14 +1153,30 @@ class Effect:
 
 @dataclass
 class StationRule:
+    _group_counter = 0
+
     conditions: list[Condition] = field(default_factory=list)
     effects: list[Effect] = field(default_factory=list)
     max_traversals: int = 20
+    group_number: int | None = None
     rule_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    @classmethod
+    def _next_group_number(cls) -> int:
+        cls._group_counter += 1
+        return cls._group_counter
 
     def __post_init__(self):
         if not self.rule_id:
             self.rule_id = uuid.uuid4().hex
+        if self.group_number is None:
+            self.group_number = self._next_group_number()
+        else:
+            try:
+                self.group_number = max(1, int(self.group_number))
+                StationRule._group_counter = max(StationRule._group_counter, self.group_number)
+            except (TypeError, ValueError):
+                self.group_number = self._next_group_number()
         try:
             self.max_traversals = min(1000, max(1, int(self.max_traversals)))
         except (TypeError, ValueError):
@@ -1106,6 +1187,7 @@ class StationRule:
             conditions=[Condition(c.attribute, c.operator, c.value) for c in self.conditions],
             effects=[Effect(e.attribute, e.action, e.value) for e in self.effects],
             max_traversals=self.max_traversals,
+            group_number=self.group_number,
             rule_id=self.rule_id,
         )
 
@@ -1114,6 +1196,7 @@ class StationRule:
             "conditions": [StationItem._serialize_condition(cond) for cond in self.conditions],
             "effects": [StationItem._serialize_effect(eff) for eff in self.effects],
             "max_traversals": int(self.max_traversals),
+            "group_number": int(self.group_number),
             "rule_id": self.rule_id,
         }
 
@@ -1139,13 +1222,14 @@ class StationRule:
             conditions=conditions,
             effects=effects,
             max_traversals=max_traversals,
+            group_number=data.get("group_number"),
             rule_id=data.get("rule_id") or uuid.uuid4().hex,
         )
 
     def __str__(self) -> str:
         cond_text = " ∧ ".join(str(cond) for cond in self.conditions) if self.conditions else "immer"
         eff_text = ", ".join(str(eff) for eff in self.effects) if self.effects else "keine Effekte"
-        traversal_text = f"[{self.max_traversals}x]"
+        traversal_text = f"[G{self.group_number} | {self.max_traversals}x]"
         return f"{traversal_text} {cond_text} → {eff_text}"
 
 
@@ -1160,8 +1244,10 @@ class TextBlockItem(QGraphicsItem):
         super().__init__()
         self.node_id = uuid.uuid4().hex
         self._text = text
+        self.linked_node_ids: set[str] = set()
         self._w    = 180
         self._h    = 70
+        self.setZValue(5)
         self.setFlags(
             QGraphicsItem.ItemIsMovable |
             QGraphicsItem.ItemIsSelectable |
@@ -1194,7 +1280,7 @@ class TextBlockItem(QGraphicsItem):
         # Body
         body = QPainterPath()
         body.addRoundedRect(rect, 6, 6)
-        painter.fillPath(body, QBrush(QColor(255, 252, 220, 235)))
+        painter.fillPath(body, QBrush(QColor(255, 252, 220, 255)))
 
         # Fold corner decoration
         fold = 14
@@ -1228,5 +1314,10 @@ class TextBlockItem(QGraphicsItem):
     def mouseDoubleClickEvent(self, event):
         if self.scene():
             self.scene().open_text_editor(self)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged and self.scene():
+            self.scene().update_connections_for(self)
+        return super().itemChange(change, value)
 
 

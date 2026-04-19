@@ -17,8 +17,10 @@ from PyQt5.QtWidgets import *  # noqa: F401,F403
 
 try:
     from .items import *  # noqa: F401,F403
+    from .sat_validation import compute_sat_validation
 except ImportError:
     from items import *  # type: ignore # noqa: F401,F403
+    from sat_validation import compute_sat_validation  # type: ignore
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SZENE
@@ -164,20 +166,30 @@ class FlowScene(QGraphicsScene):
             return item.in_port if self._can_connect(src_port, item.in_port) else None
         return None
 
+    def _cleanup_text_links_for_node(self, node_id: str):
+        if not node_id:
+            return
+        for item in self.items():
+            if isinstance(item, TextBlockItem) and node_id in item.linked_node_ids:
+                item.linked_node_ids.discard(node_id)
+
     def _delete_scene_item(self, item):
         if isinstance(item, ConnectionItem):
             self._remove_conn(item)
         elif isinstance(item, StationItem):
+            self._cleanup_text_links_for_node(item.node_id)
             for c in list(item.all_connections()):
                 self._remove_conn(c)
             self.removeItem(item)
         elif isinstance(item, AttributeItem):
+            self._cleanup_text_links_for_node(item.node_id)
             for station in self._station_items():
                 self._remove_related_conditions_for_attribute(item, station)
             for c in list(item.all_connections()):
                 self._remove_conn(c)
             self.removeItem(item)
         elif isinstance(item, TextBlockItem):
+            self._cleanup_text_links_for_node(item.node_id)
             self.removeItem(item)
         self.validate_all(changed_targets=[item])
 
@@ -265,14 +277,17 @@ class FlowScene(QGraphicsScene):
                 if isinstance(item, ConnectionItem):
                     self._remove_conn(item)
                 elif isinstance(item, StationItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     for c in list(item.all_connections()):
                         self._remove_conn(c)
                     self.removeItem(item)
                 elif isinstance(item, AttributeItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     for c in list(item.all_connections()):
                         self._remove_conn(c)
                     self.removeItem(item)
                 elif isinstance(item, TextBlockItem):
+                    self._cleanup_text_links_for_node(item.node_id)
                     self.removeItem(item)
             self.validate_all(changed_targets=deleted_items)
         super().keyPressEvent(event)
@@ -440,19 +455,31 @@ class FlowScene(QGraphicsScene):
             from ui import ConnectionDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
         previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
+        previous_name = conn.name
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
 
         def _preview_validate():
-            conn.conditions = dlg.result_data()
+            data = dlg.result_data()
+            if isinstance(data, dict):
+                conn.name = data.get("name", "")
+                conn.conditions = data.get("conditions", [])
+            else:
+                conn.conditions = data
             conn.update()
             self.validate_all(changed_targets=[conn])
 
         dlg.conditions_changed.connect(_preview_validate)
         if dlg.exec_() == QDialog.Accepted:
-            conn.conditions = dlg.result_data()
+            data = dlg.result_data()
+            if isinstance(data, dict):
+                conn.name = data.get("name", "")
+                conn.conditions = data.get("conditions", [])
+            else:
+                conn.conditions = data
             conn.update()
             self.validate_all(changed_targets=[conn])
         else:
+            conn.name = previous_name
             conn.conditions = previous_conditions
             conn.update()
             self.validate_all(changed_targets=[conn])
@@ -480,70 +507,52 @@ class FlowScene(QGraphicsScene):
     # in zyklischen Abschnitten, da alle Knoten in einer SCC letztendlich
     # denselben Zustand haben werden.
 
+
     def _find_sccs_tarjan(self, station_ids: list[str], flow_succs: dict[str, list]) -> list[list[str]]:
         """
         Findet stark verbundene Komponenten mithilfe von Tarjan's Algorithmus.
         Gibt eine Liste von SCCs zurück, wobei jede SCC eine Liste von Station-IDs ist.
         """
         index_counter = 0
-        lowlinks = {}
-        index_map = {}
-        circle_with = {}
-        on_stack = set()
-        stack = []
-        sccs = set()
+        index_map: dict[str, int] = {}
+        lowlinks: dict[str, int] = {}
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        sccs: list[list[str]] = []
 
-        def strongconnect(node):
+        def strongconnect(node: str):
+            nonlocal index_counter
+
             index_map[node] = index_counter
             lowlinks[node] = index_counter
             index_counter += 1
+
             stack.append(node)
             on_stack.add(node)
-            #print(node)
-            for _, succ_id in flow_succs.get(node, [-1, -1]):
+
+            for _, succ_id in flow_succs.get(node, []):
                 if succ_id not in index_map:
                     strongconnect(succ_id)
                     lowlinks[node] = min(lowlinks[node], lowlinks[succ_id])
                 elif succ_id in on_stack:
                     lowlinks[node] = min(lowlinks[node], index_map[succ_id])
-                    circle_with[succ_id] = node
-                print(f"Visited {node} -> {succ_id}, lowlink[{node}] = {lowlinks[node]} ({circle_with.get(node, -1)})")
-                if node in circle_with and lowlinks[node] <= index_map[node]:
-                    scc = []
-                    pop_stack = []
-                    reached_start = False
-                    while True:
-                        w = stack.pop()
-                        pop_stack.append(w)
-                        if w == circle_with[node]:
-                            reached_start = True
-                        if reached_start:
-                            scc.append(w)
-                        if w == node and reached_start:
-                            break
-                    circle_with.pop(node, None)
-                    print("Found SCC:", scc)
-                    while len(pop_stack) > 0:
-                        w = pop_stack.pop()
-                        stack.append(w)
-                    sccs.add(tuple(scc))
-                    
+
             if lowlinks[node] == index_map[node]:
-                scc = []
+                scc: list[str] = []
                 while True:
                     w = stack.pop()
                     on_stack.discard(w)
                     scc.append(w)
                     if w == node:
                         break
-                print("Found SCC:", scc)
-                sccs.add(tuple(scc))
+                sccs.append(scc)
 
         for node_id in station_ids:
             if node_id not in index_map:
                 strongconnect(node_id)
 
-        return list(sccs)
+        return sccs
+
 
     def _collapse_sccs_to_super_graph(
         self,
@@ -560,35 +569,46 @@ class FlowScene(QGraphicsScene):
         - super_succs: scc_index -> [(conn_key, super_succ_index)] (Nachfolger im Super-Graphen)
         """
         
-        sccs.sort(key=lambda scc: len(scc), reverse=False)
-        index_counter = 0
+        # Normalize SCC list: every station must occur exactly once.
+        seen_nodes = set()
+        normalized_sccs = []
+        for comp in sccs or []:
+            clean_comp = [sid for sid in comp if sid in station_ids and sid not in seen_nodes]
+            if clean_comp:
+                normalized_sccs.append(clean_comp)
+                seen_nodes.update(clean_comp)
+        for sid in station_ids:
+            if sid not in seen_nodes:
+                normalized_sccs.append([sid])
+                seen_nodes.add(sid)
+
         scc_id_map = {}
         scc_nodes = {}
-        super_succs = {}
-        
-        for station_id in station_ids:
-            scc_id_map[station_id] = index_counter
-            scc_nodes[index_counter] = station_id
-            index_counter += 1
-            
-        for station_id in station_ids:
-            for conn_key, succ_id in flow_succs.get(station_id, []):
-                super_succs.setdefault(scc_id_map[station_id], []).append((conn_key, scc_id_map[succ_id]))
-                
-        scc_ids = map(lambda scc: [scc_id_map[s] for s in scc], sccs)
-        
-        for scc in scc_ids:
-            inbounds = []
-            for scc_station in scc:
-                if scc_station in super_succs and super_succs[scc_station][1] not in scc:
-                    scc_id_map[scc_station] = index_counter
-                    scc_nodes[index_counter] = scc_station
-                    super_succs[index_counter] = super_succs.pop(scc_station)
-                    super_succs[index_counter] = [(k, v) for k, v in super_succs[index_counter] if v not in scc]
-                    index_counter += 1
-                
-                
-            
+        node_to_scc_id = {}
+        for scc_idx, comp in enumerate(normalized_sccs):
+            scc_nodes[scc_idx] = list(comp)
+            for sid in comp:
+                scc_id_map[sid] = scc_idx
+                node_to_scc_id[sid] = scc_idx
+
+        # Build condensation graph: keep SCC-crossing edges, deduplicated.
+        super_succs = {idx: [] for idx in scc_nodes.keys()}
+        seen_edges = set()
+        for src_id in station_ids:
+            src_scc = scc_id_map.get(src_id)
+            if src_scc is None:
+                continue
+            for conn_key, dst_id in flow_succs.get(src_id, []):
+                dst_scc = scc_id_map.get(dst_id)
+                if dst_scc is None:
+                    continue
+                edge_sig = (src_scc, int(conn_key), dst_scc)
+                if edge_sig in seen_edges:
+                    continue
+                seen_edges.add(edge_sig)
+                super_succs[src_scc].append((conn_key, dst_scc))
+
+        return scc_id_map, scc_nodes, super_succs, node_to_scc_id
 
 
     def _build_scc_summary(
@@ -732,11 +752,12 @@ class FlowScene(QGraphicsScene):
         checkpoint_ids = set()
         for station in stations:
             rules = []
-            for rule in station.rules:
+            for idx, rule in enumerate(station.rules):
                 rules.append({
                     "conditions": [self._snapshot_condition(cond) for cond in rule.conditions],
                     "effects": [self._snapshot_effect(eff) for eff in rule.effects],
                     "max_traversals": min(1000, max(1, int(getattr(rule, "max_traversals", 20) or 20))),
+                    "group_number": max(1, int(getattr(rule, "group_number", idx + 1) or (idx + 1))),
                     "rule_id": getattr(rule, "rule_id", None),
                 })
             station_data[station.node_id] = {
@@ -785,125 +806,42 @@ class FlowScene(QGraphicsScene):
         # ─── Stark verbundene Komponenten (SCCs) für zyklische Grafen ──────
         station_ids = list(station_data.keys())
         sccs = self._find_sccs_tarjan(station_ids, flow_succs)
-        print("sccs:")
-        print(sccs)
-        print(self.getNamedStationList(sccs, station_data, "name"))
         scc_id_map, scc_nodes, super_succs, node_to_scc_id = self._collapse_sccs_to_super_graph(
             station_ids, flow_succs, sccs
         )
-
-        # Erstelle Super-Stations für SCCs mit mehr als einem Knoten
-        original_station_data = station_data
-        scc_station_data = {}
-        scc_root_ids = []
-        scc_checkpoint_ids = set()
-        scc_node_to_super_id = {}
-
-        for scc_idx, scc in enumerate(sccs):
-            if len(scc) == 1:
-                # Einzelne Knoten bleiben unverändert
-                station_id = scc[0]
-                scc_station_data[station_id] = original_station_data[station_id]
-                scc_node_to_super_id[station_id] = station_id
-                if station_id in root_ids:
-                    scc_root_ids.append(station_id)
-                if station_id in checkpoint_ids:
-                    scc_checkpoint_ids.add(station_id)
-            else:
-                # Multi-Knoten SCC: erstelle einen Super-Knoten
-                super_id = f"_scc_{scc_idx}"
-                scc_summary = self._build_scc_summary(scc, original_station_data)
-                scc_station_data[super_id] = scc_summary
-                for station_id in scc:
-                    scc_node_to_super_id[station_id] = super_id
-                
-                # Markiere Super-Knoten als Root, wenn ein Original-Knoten Root ist
-                if any(sid in root_ids for sid in scc):
-                    scc_root_ids.append(super_id)
-                
-                # Markiere Super-Knoten als Checkpoint, wenn ein Original-Knoten Checkpoint ist
-                if any(sid in checkpoint_ids for sid in scc):
-                    scc_checkpoint_ids.add(super_id)
-
-        # Mapper: original connection key zu SCC connection key
-        scc_flow_succs = {sid: [] for sid in scc_station_data.keys()}
-        scc_flow_conn_conditions = {}
+        # SAT wird auf dem Originalgraphen gerechnet. SCC/Condensation-Graph
+        # dienen als Potenz-Graph-Metadaten für Diagnose und spätere Optimierungen.
+        scc_node_to_super_id = {
+            station_id: f"scc_{scc_id_map[station_id]}"
+            for station_id in station_ids
+            if station_id in scc_id_map
+        }
+        scc_super_nodes = {
+            f"scc_{scc_idx}": list(nodes)
+            for scc_idx, nodes in scc_nodes.items()
+        }
+        scc_super_succs = {f"scc_{scc_idx}": [] for scc_idx in scc_nodes.keys()}
+        scc_external_conn_keys = {f"scc_{scc_idx}": set() for scc_idx in scc_nodes.keys()}
         scc_flow_conn_srcdst = {}
-        scc_to_original_conn_key = {}
-        removed_scc_internal_conns = {}  # conn_key -> scc_id (Verbindungen innerhalb SCCs)
 
-        for conn_key in flow_conn_keys:
-            src_id, dst_id = flow_conn_srcdst[conn_key]
-            super_src_id = scc_node_to_super_id.get(src_id)
-            super_dst_id = scc_node_to_super_id.get(dst_id)
+        for src_scc_idx, edges in super_succs.items():
+            src_super_id = f"scc_{src_scc_idx}"
+            for conn_key, dst_scc_idx in edges:
+                dst_super_id = f"scc_{dst_scc_idx}"
+                if src_scc_idx != dst_scc_idx:
+                    scc_super_succs[src_super_id].append((conn_key, dst_super_id))
+                    scc_external_conn_keys[src_super_id].add(conn_key)
+                    scc_external_conn_keys[dst_super_id].add(conn_key)
+                    scc_flow_conn_srcdst[conn_key] = (src_super_id, dst_super_id)
 
-            if super_src_id is None or super_dst_id is None:
-                continue
-
-            # Verbindungen innerhalb einer SCC ignorieren (werden durch Rules zusammengefasst)
-            if super_src_id == super_dst_id:
-                # Merke diese Verbindung als innerhalb einer SCC entfernt
-                removed_scc_internal_conns[conn_key] = super_src_id
-                continue
-
-            # Verwende die gleiche conn_key (Mapping durch scc_to_original_conn_key)
-            scc_flow_succs[super_src_id].append((conn_key, super_dst_id))
-            scc_flow_conn_conditions[conn_key] = flow_conn_conditions[conn_key]
-            scc_flow_conn_srcdst[conn_key] = (super_src_id, super_dst_id)
-            scc_to_original_conn_key[conn_key] = conn_key
-
-        # Dedupliziere Verbindungen zwischen gleichen Super-Knoten (für Multi-SCC Verbindungen)
-        # deterministisch über eine stabile semantische Sortierung.
-        final_flow_succs = {sid: [] for sid in scc_station_data.keys()}
-        final_conn_keys = []
-        removed_scc_dedup_conns = {}
-
-        grouped_super_edges = {}
-        for super_src_id in scc_flow_succs:
-            for conn_key, super_dst_id in scc_flow_succs[super_src_id]:
-                super_edge = (super_src_id, super_dst_id)
-                grouped_super_edges.setdefault(super_edge, []).append(conn_key)
-
-        def _cond_signature(cond: dict) -> tuple:
-            return (
-                str(cond.get("attr_id")),
-                str(cond.get("attr_name", "")),
-                str(cond.get("op", "")),
-                float(cond.get("value", 0.0)),
-            )
-
-        def _conn_stable_key(conn_key: int):
-            src_id, dst_id = flow_conn_srcdst.get(conn_key, ("", ""))
-            conds = flow_conn_conditions.get(conn_key, [])
-            cond_sig = tuple(_cond_signature(cond) for cond in conds)
-            return (str(src_id), str(dst_id), cond_sig, int(conn_order.get(conn_key, 0)))
-
-        for super_edge in sorted(grouped_super_edges.keys(), key=lambda e: (str(e[0]), str(e[1]))):
-            super_src_id, super_dst_id = super_edge
-            conn_keys = grouped_super_edges[super_edge]
-            kept_conn_key = min(conn_keys, key=_conn_stable_key)
-
-            final_flow_succs[super_src_id].append((kept_conn_key, super_dst_id))
-            final_conn_keys.append(kept_conn_key)
-
-            for conn_key in conn_keys:
-                if conn_key != kept_conn_key:
-                    removed_scc_dedup_conns[conn_key] = kept_conn_key
-
-        # Externe SCC-Kanten je SCC für spätere Status-Ableitung merken.
-        scc_external_conn_keys = {sid: set() for sid in scc_station_data.keys()}
-        for conn_key, (src_scc_id, dst_scc_id) in scc_flow_conn_srcdst.items():
-            if src_scc_id in scc_external_conn_keys:
-                scc_external_conn_keys[src_scc_id].add(conn_key)
-            if dst_scc_id in scc_external_conn_keys:
-                scc_external_conn_keys[dst_scc_id].add(conn_key)
-
-        # WICHTIG: Für korrekte Semantik validieren wir weiterhin auf dem
-        # Originalgraphen. SCC-Daten bleiben reine Metadaten/Analyse.
         removed_scc_internal_conns = {}
+        for conn_key, (src_id, dst_id) in flow_conn_srcdst.items():
+            src_scc = scc_id_map.get(src_id)
+            dst_scc = scc_id_map.get(dst_id)
+            if src_scc is not None and src_scc == dst_scc:
+                removed_scc_internal_conns[conn_key] = f"scc_{src_scc}"
+
         removed_scc_dedup_conns = {}
-        scc_external_conn_keys = {}
-        scc_flow_conn_srcdst = {}
 
         changed_station_ids = set()
         changed_conn_keys = set()
@@ -973,7 +911,9 @@ class FlowScene(QGraphicsScene):
             "station_lookup": station_lookup,
             "connection_kinds": connection_kinds,
             "scc_node_to_super_id": scc_node_to_super_id,
-            "original_station_data": original_station_data,
+            "original_station_data": station_data,
+            "scc_super_nodes": scc_super_nodes,
+            "scc_super_succs": scc_super_succs,
             "removed_scc_internal_conns": removed_scc_internal_conns,
             "removed_scc_dedup_conns": removed_scc_dedup_conns,
             "scc_external_conn_keys": {k: list(v) for k, v in scc_external_conn_keys.items()} if scc_external_conn_keys else {},
@@ -983,443 +923,20 @@ class FlowScene(QGraphicsScene):
         }
 
     def _compute_validation_snapshot(self, snapshot: dict, cancel_event: Event, generation: int):
-        started = time.perf_counter()
-        profile_enabled = bool(getattr(self, "validation_profiling_enabled", False))
-        station_data = snapshot["station_data"]
-        root_ids = snapshot["root_ids"]
-        checkpoint_ids = snapshot["checkpoint_ids"]
-        flow_succs = snapshot["flow_succs"]
-        flow_conn_conditions = snapshot["flow_conn_conditions"]
-        target_conn_keys = set(snapshot.get("target_conn_keys", snapshot["flow_conn_keys"]))
-        target_checkpoint_ids = set(snapshot.get("target_checkpoint_ids", snapshot["checkpoint_ids"]))
-        total_flow_conn_keys = set(snapshot["flow_conn_keys"])
-        max_depth = snapshot["max_depth"]
-        station_rules_by_id = {station_id: data.get("rules", []) for station_id, data in station_data.items()}
+        def status_emit(msg: str):
+            # Ignore stale worker updates from older generations.
+            if generation != self._validation_generation:
+                return
+            if cancel_event.is_set():
+                return
+            self.status_message.emit(msg)
 
-        profile = {
-            "state_signatures": 0,
-            "count_signatures": 0,
-            "condition_hits": 0,
-            "condition_misses": 0,
-            "transition_hits": 0,
-            "transition_misses": 0,
-            "transition_hash_collisions": 0,
-            "apply_hits": 0,
-            "apply_misses": 0,
-            "dfs_calls": 0,
-            "dfs_pruned": 0,
-            "dominance_pruned": 0,
-            "reason_materializations": 0,
-            "t_state_signature_ms": 0,
-            "t_count_signature_ms": 0,
-            "t_condition_eval_ms": 0,
-            "t_transition_ms": 0,
-            "t_apply_rule_ms": 0,
-            "t_reason_materialize_ms": 0,
-            "t_collect_states_ms": 0,
-            "t_best_pick_ms": 0,
-        }
-
-        def build_metrics(cancelled: bool = False) -> dict:
-            metrics = {
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-                "mode": "inkrementell" if target_conn_keys != total_flow_conn_keys else "voll",
-                "target_flow": len(target_conn_keys),
-                "total_flow": len(total_flow_conn_keys),
-                "target_checkpoints": len(target_checkpoint_ids),
-                "total_checkpoints": len(checkpoint_ids),
-                "cancelled": cancelled,
-            }
-            if profile_enabled:
-                profiling = {}
-                for key, value in profile.items():
-                    profiling[key] = round(value, 3) if key.startswith("t_") else value
-                metrics["profiling"] = profiling
-            return metrics
-
-        def rule_key(station_id: str, rule: dict) -> str | None:
-            key = rule.get("rule_id")
-            if not key:
-                return None
-            return f"{station_id}:{key}"
-
-        def state_signature(state: dict) -> tuple:
-            ts = time.perf_counter()
-            result = tuple(sorted(state.items()))
-            profile["state_signatures"] += 1
-            profile["t_state_signature_ms"] += (time.perf_counter() - ts) * 1000
-            return result
-
-        def counts_signature(active_rule_counts: dict[str, int]) -> tuple:
-            ts = time.perf_counter()
-            result = tuple(sorted(active_rule_counts.items()))
-            profile["count_signatures"] += 1
-            profile["t_count_signature_ms"] += (time.perf_counter() - ts) * 1000
-            return result
-
-        apply_rule_cache = {}
-
-        def apply_station_rule(rule: dict, incoming_state: dict, incoming_signature: tuple | None = None) -> dict:
-            rule_token = rule.get("rule_id") or id(rule)
-            signature = incoming_signature if incoming_signature is not None else state_signature(incoming_state)
-            cache_key = (rule_token, signature)
-            cached = apply_rule_cache.get(cache_key)
-            if cached is not None:
-                profile["apply_hits"] += 1
-                return cached
-
-            profile["apply_misses"] += 1
-            ts = time.perf_counter()
-            out = dict(incoming_state)
-            if all(check_condition_cached(cond, incoming_state) for cond in rule["conditions"]):
-                out = self._snapshot_apply_effects(out, rule["effects"])
-            apply_rule_cache[cache_key] = out
-            profile["t_apply_rule_ms"] += (time.perf_counter() - ts) * 1000
-            return out
-
-        transition_cache = {}
-        condition_eval_cache = {}
-
-        def check_condition_cached(cond: dict, state: dict) -> bool:
-            attr_id = cond.get("attr_id")
-            op = cond.get("op", CONDITION_OP.EXISTS.value)
-            cmp_value = float(cond.get("value", 0.0))
-            if attr_id is None:
-                count = 0.0
-            else:
-                raw = state.get(attr_id)
-                count = 0.0 if raw is None else raw
-            key = (attr_id, op, cmp_value, count)
-            if key in condition_eval_cache:
-                profile["condition_hits"] += 1
-                return condition_eval_cache[key]
-            profile["condition_misses"] += 1
-            ts = time.perf_counter()
-            result = self._snapshot_check_condition(cond, state)
-            condition_eval_cache[key] = result
-            profile["t_condition_eval_ms"] += (time.perf_counter() - ts) * 1000
-            return result
-
-        def materialize_reasons(reason_payload: dict) -> list[str]:
-            ts = time.perf_counter()
-            profile["reason_materializations"] += 1
-            unmet_conn = reason_payload.get("unmet_conn", [])
-            unmet_station = reason_payload.get("unmet_station", [])
-            blocked_limit = bool(reason_payload.get("blocked_limit", False))
-            if not unmet_conn and not unmet_station and not blocked_limit:
-                profile["t_reason_materialize_ms"] += (time.perf_counter() - ts) * 1000
-                return []
-
-            state_map = dict(reason_payload.get("state_key", ()))
-            station_name = reason_payload.get("station_name", "")
-            max_traversals = int(reason_payload.get("max_traversals", 20) or 20)
-            reasons = []
-
-            if unmet_conn:
-                conn_state_values = {
-                    cond.get("attr_name", ""): state_map.get(cond.get("attr_id"))
-                    for cond in unmet_conn
-                }
-                for cond in unmet_conn:
-                    reasons.append(
-                        f"Die Pfeil bedingung ist nicht erfüllt: {self._snapshot_cond_text(cond)} ({conn_state_values})"
-                    )
-
-            if unmet_station:
-                station_state_values = {
-                    cond.get("attr_name", ""): state_map.get(cond.get("attr_id"))
-                    for cond in unmet_station
-                }
-                for cond in unmet_station:
-                    reasons.append(
-                        f"Die {station_name} bedingung ist nicht erfüllt: {self._snapshot_cond_text(cond)} ({station_state_values})"
-                    )
-
-            if blocked_limit:
-                reasons.append(
-                    f"Die {station_name} Regel hat das Traversierungs-Limit ({max_traversals}) seit dem letzten Checkpoint erreicht."
-                )
-
-            profile["t_reason_materialize_ms"] += (time.perf_counter() - ts) * 1000
-            return reasons
-
-        def transition_for(
-            conn_key: int,
-            station_id: str,
-            station_name: str,
-            rule: dict,
-            incoming_state: dict,
-            active_rule_counts: dict[str, int],
-            incoming_signature: tuple | None = None,
-            counts_key: tuple | None = None,
-        ):
-            rule_token = rule.get("rule_id") or id(rule)
-            state_key = incoming_signature if incoming_signature is not None else state_signature(incoming_state)
-            rule_counts_key = counts_key if counts_key is not None else counts_signature(active_rule_counts)
-            cache_key = (conn_key, rule_token, state_key, hash(rule_counts_key))
-            bucket = transition_cache.get(cache_key)
-            if bucket is not None:
-                for cached_counts_key, cached_result in bucket:
-                    if cached_counts_key == rule_counts_key:
-                        profile["transition_hits"] += 1
-                        return cached_result
-                profile["transition_hash_collisions"] += 1
-
-            profile["transition_misses"] += 1
-            ts = time.perf_counter()
-            conn_conditions = flow_conn_conditions.get(conn_key, [])
-            station_conditions = rule.get("conditions", [])
-            unmet_conn = [
-                cond for cond in conn_conditions
-                if not check_condition_cached(cond, incoming_state)
-            ]
-            unmet_station = [
-                cond for cond in station_conditions
-                if not check_condition_cached(cond, incoming_state)
-            ]
-            key = rule_key(station_id, rule)
-            max_traversals = min(1000, max(1, int(rule.get("max_traversals", 20) or 20)))
-            current_count = 0 if key is None else active_rule_counts.get(key, 0)
-            blocked_limit = bool(key is not None and current_count >= max_traversals)
-
-            if not unmet_conn and not unmet_station and not blocked_limit:
-                state = CONNECTION_STATE.VALID
-            elif unmet_conn and not unmet_station:
-                state = CONNECTION_STATE.CONDITIONAL_VALID
-            elif not unmet_conn and unmet_station:
-                state = CONNECTION_STATE.INVALID
-            else:
-                state = CONNECTION_STATE.CONDITIONAL_INVALID
-
-            reason_payload = {
-                "station_name": station_name,
-                "unmet_conn": unmet_conn,
-                "unmet_station": unmet_station,
-                "blocked_limit": blocked_limit,
-                "max_traversals": max_traversals,
-                "state_key": state_key,
-            }
-            result = (state, reason_payload, blocked_limit, key)
-            if bucket is None:
-                transition_cache[cache_key] = [(rule_counts_key, result)]
-            else:
-                bucket.append((rule_counts_key, result))
-            profile["t_transition_ms"] += (time.perf_counter() - ts) * 1000
-            return result
-        
-        def collect_states (allow_conditional: bool):
-            conn_states_valid = {conn_key: [] for conn_key in target_conn_keys}
-            conn_states_conditional_valid = {conn_key: [] for conn_key in target_conn_keys}
-            checkpoint_levels = {sid: set() for sid in target_checkpoint_ids}
-            dominance_best = {}
-            
-            def state_level(state: CONNECTION_STATE) -> int:
-                if state == CONNECTION_STATE.VALID:
-                    return 0
-                if state == CONNECTION_STATE.CONDITIONAL_VALID:
-                    return 1
-                return 2
-            
-            def dfs(
-                station_id: str,
-                incoming_state: dict,
-                depth_left: int,
-                level: int,
-                reached_checkpoint: bool,
-                active_rule_counts: dict[str, int],
-                cache: set,
-                conn_state_con_val:bool = False,
-            ):
-                profile["dfs_calls"] += 1
-                at_checkpoint = reached_checkpoint or (station_id in checkpoint_ids)
-                segment_rule_counts = {} if station_id in checkpoint_ids else active_rule_counts
-                incoming_signature = state_signature(incoming_state)
-                counts_key = counts_signature(segment_rule_counts)
-
-                dominance_key = (station_id, at_checkpoint, incoming_signature, counts_key, conn_state_con_val)
-                previous_best = dominance_best.get(dominance_key)
-                if previous_best is not None:
-                    best_depth, best_level = previous_best
-                    if best_depth >= depth_left and best_level <= level:
-                        profile["dominance_pruned"] += 1
-                        return
-                    dominance_best[dominance_key] = (max(best_depth, depth_left), min(best_level, level))
-                else:
-                    dominance_best[dominance_key] = (depth_left, level)
-
-                cache_key = (station_id, depth_left, at_checkpoint, incoming_signature, counts_key)
-                if cache_key in cache:
-                    profile["dfs_pruned"] += 1
-                    return
-                cache.add(cache_key)
-
-                if depth_left <= 0:
-                    return
-
-                for conn_key, succ_id in flow_succs.get(station_id, []):
-                    succ = station_data.get(succ_id)
-                    if succ is None:
-                        continue
-
-                    rules = station_rules_by_id.get(succ_id, [])
-                    if not rules:
-                        transition_state, reasons, _, _ = transition_for(
-                            conn_key,
-                            succ_id,
-                            succ["name"],
-                            {},
-                            incoming_state,
-                            segment_rule_counts,
-                            incoming_signature,
-                            counts_key,
-                        )
-                        state_cont = False
-                        next_level = level
-                        if transition_state in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
-                            next_level = max(level, state_level(transition_state))
-                            if succ_id in checkpoint_levels:
-                                checkpoint_levels[succ_id].add(next_level)
-                            state_cont = True
-                        if conn_state_con_val:
-                            if conn_key in conn_states_conditional_valid:
-                                conn_states_conditional_valid[conn_key].append((transition_state, reasons))
-                        else:
-                            if conn_key in conn_states_valid:
-                                conn_states_valid[conn_key].append((transition_state, reasons))
-                        if not state_cont:
-                            continue
-                        if transition_state == CONNECTION_STATE.VALID and not conn_state_con_val:
-                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache)
-                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID and not conn_state_con_val:
-                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache, True)
-                        elif conn_state_con_val:
-                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache, True)
-                        elif state_cont:
-                            dfs(succ_id, incoming_state, depth_left - 1, next_level, at_checkpoint, segment_rule_counts, cache)
-
-                    for rule in rules:
-                        transition_state, reasons, blocked_limit, key = transition_for(
-                            conn_key,
-                            succ_id,
-                            succ["name"],
-                            rule,
-                            incoming_state,
-                            segment_rule_counts,
-                            incoming_signature,
-                            counts_key,
-                        )
-                        state_cont = False
-                        next_level = level
-                        if conn_state_con_val:
-                            if conn_key in conn_states_conditional_valid:
-                                conn_states_conditional_valid[conn_key].append((transition_state, reasons))
-                        else:
-                            if conn_key in conn_states_valid:
-                                conn_states_valid[conn_key].append((transition_state, reasons))
-                        if transition_state in (CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID):
-                            next_level = max(level, state_level(transition_state))
-                            if succ_id in checkpoint_levels:
-                                checkpoint_levels[succ_id].add(next_level)
-                            state_cont = True  
-                        else:
-                            continue                          
-                        if transition_state == CONNECTION_STATE.VALID and not conn_state_con_val:
-                            current_state = apply_station_rule(rule, incoming_state, incoming_signature)
-                            next_rule_counts = dict(segment_rule_counts)
-                            if key and not blocked_limit:
-                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache)
-                        elif allow_conditional and transition_state == CONNECTION_STATE.CONDITIONAL_VALID and not conn_state_con_val:
-                            current_state = apply_station_rule(rule, incoming_state, incoming_signature)
-                            next_rule_counts = dict(segment_rule_counts)
-                            if key and not blocked_limit:
-                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache, True)
-                        elif conn_state_con_val:
-                            current_state = apply_station_rule(rule, incoming_state, incoming_signature)
-                            next_rule_counts = dict(segment_rule_counts)
-                            if key and not blocked_limit:
-                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache, True)
-                        elif state_cont:
-                            current_state = apply_station_rule(rule, incoming_state, incoming_signature)
-                            next_rule_counts = dict(segment_rule_counts)
-                            if key and not blocked_limit:
-                                next_rule_counts[key] = next_rule_counts.get(key, 0) + 1
-                            dfs(succ_id, current_state, depth_left - 1, next_level, at_checkpoint, next_rule_counts, cache)
-            collect_started = time.perf_counter()
-            last_progress_emit = 0.0
-            last_progress_value = -1
-            for depth in range(1, max_depth + 1):
-                if cancel_event.is_set():
-                    profile["t_collect_states_ms"] += (time.perf_counter() - collect_started) * 1000
-                    return None
-                if depth % max(1, max_depth // 10) == 0:
-                    progress_value = 67 + int(depth * 32 / max_depth)
-                    now = time.perf_counter()
-                    if progress_value != last_progress_value and (now - last_progress_emit) >= 0.1:
-                        self.status_message.emit(f"Validierung läuft ... {progress_value}%")
-                        last_progress_emit = now
-                        last_progress_value = progress_value
-                depth_cache = set()
-                for root_id in root_ids:
-                    root_rules = station_rules_by_id.get(root_id, [])
-                    if not root_rules:
-                        dfs(root_id, {}, depth, False, False, {}, depth_cache)
-                    for rule in root_rules:
-                        current_state = apply_station_rule(rule, {}, ())
-                        dfs(root_id, current_state, depth, False, False, {}, depth_cache)
-            profile["t_collect_states_ms"] += (time.perf_counter() - collect_started) * 1000
-            return checkpoint_levels, conn_states_valid, conn_states_conditional_valid
-        checkpoint_levels, strict_states, fallback_states = collect_states(True)
-        if strict_states is None:
-            return {
-                "cancelled": True,
-                "metrics": build_metrics(cancelled=True),
-            }
-        if fallback_states is None:
-            return {
-                "cancelled": True,
-                "metrics": build_metrics(cancelled=True),
-            }
-        if checkpoint_levels is None:
-            return {
-                "cancelled": True,
-                "metrics": build_metrics(cancelled=True),
-            }
-
-        priority = {
-            CONNECTION_STATE.VALID: 0,
-            CONNECTION_STATE.CONDITIONAL_VALID: 1,
-            CONNECTION_STATE.CONDITIONAL_INVALID: 2,
-            CONNECTION_STATE.INVALID: 3,
-        }
-
-        pick_started = time.perf_counter()
-        best_states = {}
-        for conn_key in target_conn_keys:
-            candidates = strict_states.get(conn_key, [])
-            if not any(state == CONNECTION_STATE.VALID for state, _ in candidates):
-                candidates = fallback_states.get(conn_key, [])
-            if candidates:
-                best_states[conn_key] = min(candidates, key=lambda x: priority.get(x[0], 99))
-
-        materialized_best_states = {}
-        for conn_key, payload in best_states.items():
-            state, reason_payload = payload
-            reasons = [] if state == CONNECTION_STATE.VALID else materialize_reasons(reason_payload)
-            materialized_best_states[conn_key] = (state, reasons)
-        profile["t_best_pick_ms"] += (time.perf_counter() - pick_started) * 1000
-
-        self.status_message.emit("Validierung läuft ... 100%")
-
-        return {
-            "best_states": materialized_best_states,
-            "checkpoint_levels": {sid: list(levels) for sid, levels in checkpoint_levels.items()},
-            "root_exists": bool(root_ids),
-            "cancelled": False,
-            "metrics": build_metrics(cancelled=False),
-        }
+        status_emit("Validierung läuft ... SAT-BMC")
+        return compute_sat_validation(
+            snapshot=snapshot,
+            cancel_event=cancel_event,
+            status_emit=status_emit,
+        )
 
     def _launch_validation_job(self, generation: int, snapshot: dict):
         cancel_event = Event()

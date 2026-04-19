@@ -45,6 +45,7 @@ def export_json(window):
                     "text": t._text,
                     "x": float(t.pos().x()),
                     "y": float(t.pos().y()),
+                    "linked_node_ids": sorted(list(getattr(t, "linked_node_ids", set()))),
                 }
                 for t in textblocks
             ],
@@ -101,10 +102,17 @@ def import_json(window, json_file_path=None):
     for t in data.get("textblocks", []):
         item = TextBlockItem(t.get("text", ""))
         item.node_id = t.get("node_id") or item.node_id
+        linked_ids = t.get("linked_node_ids", [])
+        if isinstance(linked_ids, list):
+            item.linked_node_ids = {str(node_id) for node_id in linked_ids if node_id}
         item._recalc_height()
         item.setPos(float(t.get("x", 0.0)), float(t.get("y", 0.0)))
         window.scene.addItem(item)
         node_map[item.node_id] = item
+
+    valid_ids = set(node_map.keys())
+    for item in [i for i in window.scene.items() if isinstance(i, TextBlockItem)]:
+        item.linked_node_ids = {node_id for node_id in item.linked_node_ids if node_id in valid_ids and node_id != item.node_id}
 
     for c in data.get("connections", []):
         conn = ConnectionItem.from_json(c, node_map)
@@ -151,6 +159,9 @@ def import_json(window, json_file_path=None):
 
     for item in touched_items:
         window.scene.update_connections_for(item)
+
+    if hasattr(window.scene, "rebuild_note_links"):
+        window.scene.rebuild_note_links()
 
     window.scene.validate_all()
     window.statusBar().showMessage(f"JSON geladen: {path}")
