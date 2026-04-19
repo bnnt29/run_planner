@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "attributes": [
+    {
+      "node_id": "0966a21cc12f4354986edf5232c49ac4",
+      "template_id": "33c2c56b1e1a4e81a19dc0c42581a79c",
+      "name": "Attribut",
+      "color": "#fbbf24",
+      "x": -20.0,
+      "y": -220.0
+    }
+  ],
+  "stations": [
+    {
+      "node_id": "74240ca13e81422c95df4a5f509d75f6",
+      "template_id": "e840cd7dfd964bf5ad0dee3d67f22184",
+      "name": "Ende",
+      "color": "#2563eb",
+      "type": 2,
+      "x": 220.0,
+      "y": -40.0,
+      "rules": []
+    },
+    {
+      "node_id": "ea4f374e0f214340b89dbf1903bd67fe",
+      "template_id": "10c580f45b7041f4ab47c8a943c44dfa",
+      "name": "Start",
+      "color": "#2563eb",
+      "type": 0,
+      "x": -260.0,
+      "y": -40.0,
+      "rules": []
+    }
+  ],
+  "textblocks": [],
+  "connections": [
+    {
+      "src_node_id": "ea4f374e0f214340b89dbf1903bd67fe",
+      "src_port_type": "output",
+      "dst_node_id": "74240ca13e81422c95df4a5f509d75f6",
+      "dst_port_type": "input",
+      "conditions": []
+    },
+    {
+      "src_node_id": "0966a21cc12f4354986edf5232c49ac4",
+      "src_port_type": "attr_output",
+      "dst_node_id": "ea4f374e0f214340b89dbf1903bd67fe",
+      "dst_port_type": "attr_input",
+      "conditions": []
+    },
+    {
+      "src_node_id": "0966a21cc12f4354986edf5232c49ac4",
+      "src_port_type": "attr_output",
+      "dst_node_id": "74240ca13e81422c95df4a5f509d75f6",
+      "dst_port_type": "attr_input",
+      "conditions": []
+    }
+  ]
+}
