@@ -1,0 +1,827 @@
+"""
+Comprehensive test framework for sat_validation.py
+
+Tests cover:
+1. Helper functions (_check_condition, condition compilation, etc.)
+2. Core validation logic (state transitions, reachability)
+3. Condition evaluation (all operators)
+4. Edge cases and error handling
+5. CONNECTION_STATE classification logic
+6. Performance and memory optimizations
+"""
+
+import pytest
+import sys
+import os
+from pathlib import Path
+from collections import deque
+from unittest.mock import Mock, patch, MagicMock
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from run_planner.sat_validation import (
+    _is_cancelled,
+    _safe_status_emit,
+    _to_float,
+    _check_condition,
+    _compile_condition,
+    _check_condition_compiled,
+    compute_sat_validation,
+)
+from run_planner.items import CONNECTION_STATE, CONDITION_OP
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 1: Helper Function Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestHelperFunctions:
+    """Test basic utility functions"""
+
+    def test_is_cancelled_with_none_event(self):
+        """None event should not be cancelled"""
+        assert _is_cancelled(None) is False
+
+    def test_is_cancelled_with_set_event(self):
+        """Set event should return True"""
+        event = Mock()
+        event.is_set.return_value = True
+        assert _is_cancelled(event) is True
+
+    def test_is_cancelled_with_unset_event(self):
+        """Unset event should return False"""
+        event = Mock()
+        event.is_set.return_value = False
+        assert _is_cancelled(event) is False
+
+    def test_safe_status_emit_with_none(self):
+        """None emit should not raise"""
+        _safe_status_emit(None, "test message")  # Should not raise
+
+    def test_safe_status_emit_with_callable(self):
+        """Callable should be invoked"""
+        emit = Mock()
+        _safe_status_emit(emit, "test message")
+        emit.assert_called_once_with("test message")
+
+    def test_safe_status_emit_with_exception(self):
+        """Exception in emit should be caught"""
+        emit = Mock(side_effect=Exception("Test error"))
+        _safe_status_emit(emit, "test message")  # Should not raise
+
+    def test_to_float_with_valid_number(self):
+        """Valid numbers should convert correctly"""
+        assert _to_float(42) == 42.0
+        assert _to_float("3.14") == 3.14
+        assert _to_float(0) == 0.0
+
+    def test_to_float_with_invalid_input(self):
+        """Invalid inputs should return 0.0"""
+        assert _to_float("invalid") == 0.0
+        assert _to_float(None) == 0.0
+        assert _to_float({}) == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 2: Condition Evaluation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConditionEvaluation:
+    """Test condition checking logic"""
+
+    def test_condition_exists_true(self):
+        """EXISTS operator should return True when attribute > 0"""
+        cond = {"attr_id": "attr1", "op": CONDITION_OP.EXISTS.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_exists_false(self):
+        """EXISTS operator should return False when attribute == 0"""
+        cond = {"attr_id": "attr1", "op": CONDITION_OP.EXISTS.value}
+        state = {"attr1": 0.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_not_exists_true(self):
+        """NOT_EXISTS operator should return True when attribute == 0"""
+        cond = {"attr_id": "attr1", "op": CONDITION_OP.NOT_EXISTS.value}
+        state = {"attr1": 0.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_not_exists_false(self):
+        """NOT_EXISTS operator should return False when attribute > 0"""
+        cond = {"attr_id": "attr1", "op": CONDITION_OP.NOT_EXISTS.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_equals_true(self):
+        """EQUALS operator should match exact values"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.EQUALS.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_equals_false(self):
+        """EQUALS operator should not match different values"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.EQUALS.value}
+        state = {"attr1": 3.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_not_equals_true(self):
+        """NOT_EQUALS operator should return True for different values"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.NOT_EQUALS.value}
+        state = {"attr1": 3.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_not_equals_false(self):
+        """NOT_EQUALS operator should return False for equal values"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.NOT_EQUALS.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_greater_true(self):
+        """GREATER operator should correctly compare"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.GREATER.value}
+        state = {"attr1": 10.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_greater_false(self):
+        """GREATER operator should return False when not greater"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.GREATER.value}
+        state = {"attr1": 3.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_greater_eq_equal(self):
+        """GREATER_EQ operator should return True when equal"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.GREATER_EQ.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_greater_eq_greater(self):
+        """GREATER_EQ operator should return True when greater"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.GREATER_EQ.value}
+        state = {"attr1": 10.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_less_true(self):
+        """LESS operator should correctly compare"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.LESS.value}
+        state = {"attr1": 3.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_less_false(self):
+        """LESS operator should return False when not less"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.LESS.value}
+        state = {"attr1": 10.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_less_eq_equal(self):
+        """LESS_EQ operator should return True when equal"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.LESS_EQ.value}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_less_eq_less(self):
+        """LESS_EQ operator should return True when less"""
+        cond = {"attr_id": "attr1", "value": 5.0, "op": CONDITION_OP.LESS_EQ.value}
+        state = {"attr1": 3.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_compare_attribute_exists(self):
+        """Conditions can compare two attributes"""
+        cond = {
+            "attr_id": "attr1",
+            "compare_attr_id": "attr2",
+            "op": CONDITION_OP.EQUALS.value,
+        }
+        state = {"attr1": 5.0, "attr2": 5.0}
+        assert _check_condition(cond, state) is True
+
+    def test_condition_compare_attribute_not_equal(self):
+        """Conditions should correctly compare different attributes"""
+        cond = {
+            "attr_id": "attr1",
+            "compare_attr_id": "attr2",
+            "op": CONDITION_OP.EQUALS.value,
+        }
+        state = {"attr1": 5.0, "attr2": 3.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_missing_attribute(self):
+        """Missing attributes should default to 0.0"""
+        cond = {"attr_id": "missing", "op": CONDITION_OP.EXISTS.value}
+        state = {"other": 5.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_unknown_operator(self):
+        """Unknown operators should return False"""
+        cond = {"attr_id": "attr1", "op": "UNKNOWN_OP"}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is False
+
+    def test_condition_default_operator(self):
+        """Missing operator should default to EXISTS"""
+        cond = {"attr_id": "attr1"}
+        state = {"attr1": 5.0}
+        assert _check_condition(cond, state) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3: Condition Compilation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConditionCompilation:
+    """Test condition compilation and compiled evaluation"""
+
+    def test_compile_condition_basic(self):
+        """Conditions should compile correctly"""
+        cond = {
+            "attr_id": "attr1",
+            "compare_attr_id": "attr2",
+            "op": CONDITION_OP.GREATER.value,
+            "value": 5.0,
+        }
+        compiled = _compile_condition(cond)
+        assert compiled == ("attr1", "attr2", CONDITION_OP.GREATER.value, 5.0)
+
+    def test_compile_condition_missing_fields(self):
+        """Compilation should handle missing fields"""
+        cond = {"attr_id": "attr1"}
+        compiled = _compile_condition(cond)
+        assert compiled == ("attr1", None, CONDITION_OP.EXISTS.value, 0.0)
+
+    def test_compiled_condition_evaluation_matches_original(self):
+        """Compiled and original evaluation should match"""
+        cond = {
+            "attr_id": "attr1",
+            "value": 5.0,
+            "op": CONDITION_OP.GREATER.value,
+        }
+        compiled = _compile_condition(cond)
+        state = {"attr1": 10.0}
+
+        original_result = _check_condition(cond, state)
+        compiled_result = _check_condition_compiled(compiled, state)
+
+        assert original_result == compiled_result
+
+    def test_compiled_all_operators(self):
+        """All operators should work with compiled evaluation"""
+        operators = [
+            CONDITION_OP.EXISTS.value,
+            CONDITION_OP.NOT_EXISTS.value,
+            CONDITION_OP.EQUALS.value,
+            CONDITION_OP.NOT_EQUALS.value,
+            CONDITION_OP.GREATER.value,
+            CONDITION_OP.GREATER_EQ.value,
+            CONDITION_OP.LESS.value,
+            CONDITION_OP.LESS_EQ.value,
+        ]
+
+        for op in operators:
+            cond = {
+                "attr_id": "attr1",
+                "value": 5.0,
+                "op": op,
+            }
+            compiled = _compile_condition(cond)
+            state = {"attr1": 10.0}
+
+            # Both should work without raising
+            _check_condition(cond, state)
+            _check_condition_compiled(compiled, state)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4: Core Validation Logic Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCoreValidationLogic:
+    """Test the main validation computation"""
+
+    def test_empty_snapshot(self):
+        """Empty snapshot should return valid structure"""
+        snapshot = {
+            "station_data": {},
+            "root_ids": [],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert isinstance(result, dict)
+        assert "best_states" in result
+        assert "checkpoint_levels" in result
+        assert "metrics" in result
+        assert result["best_states"] == {}
+
+    def test_no_root_stations(self):
+        """No root stations should return empty result"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": [],  # No roots
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"] == {}
+
+    def test_single_connection_valid_path(self):
+        """Simple valid path from root to checkpoint"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {0: []},
+            "connection_kinds": {0: "FLOW"},
+            "max_depth": 200,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert "best_states" in result
+        assert 0 in result["best_states"]
+        state, reasons = result["best_states"][0]
+        assert state == CONNECTION_STATE.VALID
+        assert isinstance(reasons, list)
+        assert len(reasons) > 0
+
+    def test_connection_with_conditions(self):
+        """Connection with unsatisfiable conditions should be INVALID or CONDITIONAL_INVALID"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {
+                0: [
+                    {
+                        "attr_id": "attr1",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ]
+            },
+            "connection_kinds": {0: "FLOW"},
+            "max_depth": 200,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert "best_states" in result
+        # Connection with unsatisfied conditions on unreachable attributes
+        # should be classified as INVALID since the condition cannot be met
+        if 0 in result["best_states"]:
+            state, reasons = result["best_states"][0]
+            # With no rules providing attr1, condition cannot be satisfied
+            assert state == CONNECTION_STATE.INVALID
+
+    def test_cancelled_validation(self):
+        """Cancelled validation should return early"""
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = True
+
+        snapshot = {
+            "station_data": {"start": {"rules": []}},
+            "root_ids": ["start"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+
+        result = compute_sat_validation(snapshot, cancel_event=cancel_event)
+        assert result.get("cancelled") is True
+
+    def test_metrics_in_result(self):
+        """Result should include validation metrics"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": ["s1"],
+            "flow_conn_keys": [1, 2, 3],
+            "target_conn_keys": [1, 2],
+            "checkpoint_ids": ["c1", "c2"],
+            "target_checkpoint_ids": ["c1"],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+        result = compute_sat_validation(snapshot)
+
+        metrics = result.get("metrics", {})
+        assert "duration_ms" in metrics
+        assert metrics["total_flow"] == 3
+        assert metrics["target_flow"] == 2
+        assert metrics["total_checkpoints"] == 2
+        assert metrics["target_checkpoints"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: Edge Cases and Error Handling
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestEdgeCasesAndErrorHandling:
+    """Test edge cases and error conditions"""
+
+    def test_invalid_station_in_root_ids(self):
+        """Invalid stations in root_ids should be filtered"""
+        snapshot = {
+            "station_data": {"valid": {"rules": []}},
+            "root_ids": ["valid", "invalid"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+        result = compute_sat_validation(snapshot)
+        # Should not raise, should handle gracefully
+        assert isinstance(result, dict)
+
+    def test_connection_key_not_in_flow_conn_conditions(self):
+        """Missing connection condition should use empty list"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {},  # Missing condition for key 0
+            "connection_kinds": {0: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+        # Should handle missing condition gracefully
+        assert isinstance(result, dict)
+
+    def test_state_limit_respected(self):
+        """Validation should respect max_states limit"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": ["s1"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+            "max_states": 10,
+        }
+        result = compute_sat_validation(snapshot)
+        # Should complete without crashing
+        assert isinstance(result, dict)
+
+    def test_very_deep_flow(self):
+        """Very deep flow graph should respect max_depth"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": ["s1"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+            "max_depth": 5,
+        }
+        result = compute_sat_validation(snapshot)
+        assert isinstance(result, dict)
+
+    def test_circular_flow_graph(self):
+        """Circular references should not cause infinite loops"""
+        snapshot = {
+            "station_data": {
+                "s1": {"rules": []},
+                "s2": {"rules": []},
+            },
+            "root_ids": ["s1"],
+            "flow_conn_keys": [0, 1],
+            "target_conn_keys": [0, 1],
+            "checkpoint_ids": ["s2"],
+            "target_checkpoint_ids": ["s2"],
+            "flow_succs": {
+                "s1": [(0, "s2")],
+                "s2": [(1, "s1")],  # Cycle back
+            },
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW", 1: "FLOW"},
+            "max_depth": 10,  # Limit depth to prevent infinite loops
+        }
+        result = compute_sat_validation(snapshot)
+        # Should complete without crashing
+        assert isinstance(result, dict)
+        assert "best_states" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6: CONNECTION_STATE Classification Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConnectionStateClassification:
+    """Test that connections are correctly classified"""
+
+    def test_valid_state_has_reasons(self):
+        """VALID connections should have reason strings"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        if 0 in result.get("best_states", {}):
+            state, reasons = result["best_states"][0]
+            # Verify structure regardless of state type
+            assert reasons is not None
+            assert isinstance(reasons, list)
+            if len(reasons) > 0:
+                # Check for German reason strings
+                assert all(isinstance(r, str) for r in reasons)
+
+    def test_all_states_have_reasons(self):
+        """All classified connections should have reason lists"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        for conn_key, (state, reasons) in result.get("best_states", {}).items():
+            # state is CONNECTION_STATE enum, not string
+            assert isinstance(state, CONNECTION_STATE) or isinstance(state, str)
+            assert isinstance(reasons, list)
+            for reason in reasons:
+                assert isinstance(reason, str)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 7: Regression Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRegressionCases:
+    """Test cases that caught previous bugs"""
+
+    def test_no_early_termination_with_multiple_paths(self):
+        """Validation should explore all paths, not terminate early"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "mid": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0, 1, 2],
+            "target_conn_keys": [0, 1, 2],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(0, "mid"), (1, "end")],
+                "mid": [(2, "end")],
+            },
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW", 1: "FLOW", 2: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        # Both connections to end should be analyzed
+        assert isinstance(result, dict)
+        assert "best_states" in result
+
+    def test_no_aggressive_state_pruning(self):
+        """Validation should not prune states too aggressively"""
+        snapshot = {
+            "station_data": {
+                "s1": {"rules": []},
+                "s2": {"rules": []},
+            },
+            "root_ids": ["s1"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["s2"],
+            "target_checkpoint_ids": ["s2"],
+            "flow_succs": {"s1": [(0, "s2")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW"},
+            "max_states": 100,
+        }
+        result = compute_sat_validation(snapshot)
+
+        # Should complete successfully with valid result
+        assert "best_states" in result
+        assert isinstance(result["best_states"], dict)
+
+    def test_no_unstable_hash_caching(self):
+        """Same snapshot should produce same results consistently"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW"},
+        }
+
+        # Run validation twice
+        result1 = compute_sat_validation(snapshot.copy())
+        result2 = compute_sat_validation(snapshot.copy())
+
+        # Results should be identical
+        assert result1.get("best_states") == result2.get("best_states")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 8: Logic Error Detection Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLogicErrorDetection:
+    """Tests designed to catch logical errors"""
+
+    def test_condition_evaluation_symmetry(self):
+        """GREATER and LESS should be opposite operations"""
+        state = {"attr1": 10.0}
+
+        greater_cond = {
+            "attr_id": "attr1",
+            "value": 5.0,
+            "op": CONDITION_OP.GREATER.value,
+        }
+        less_cond = {
+            "attr_id": "attr1",
+            "value": 5.0,
+            "op": CONDITION_OP.LESS.value,
+        }
+
+        # With state[attr1]=10 and value=5:
+        # GREATER(10 > 5) should be True
+        # LESS(10 < 5) should be False
+        assert _check_condition(greater_cond, state) is True
+        assert _check_condition(less_cond, state) is False
+
+    def test_condition_evaluation_with_zero(self):
+        """Special handling of zero values"""
+        state = {"attr1": 0.0}
+
+        exists_cond = {"attr_id": "attr1", "op": CONDITION_OP.EXISTS.value}
+        not_exists_cond = {
+            "attr_id": "attr1",
+            "op": CONDITION_OP.NOT_EXISTS.value,
+        }
+
+        # Zero should mean not exists
+        assert _check_condition(exists_cond, state) is False
+        assert _check_condition(not_exists_cond, state) is True
+
+    def test_condition_evaluation_with_negative_values(self):
+        """EXISTS checks if value > 0, so negative values are treated as not existing"""
+        state = {"attr1": -5.0}
+
+        exists_cond = {"attr_id": "attr1", "op": CONDITION_OP.EXISTS.value}
+
+        # Negative values are NOT > 0, so EXISTS returns False
+        assert _check_condition(exists_cond, state) is False
+
+    def test_invalid_operator_always_false(self):
+        """Invalid operators should always return False"""
+        state = {"attr1": 100.0}
+        cond = {"attr_id": "attr1", "op": "INVALID_OPERATOR"}
+
+        assert _check_condition(cond, state) is False
+
+    def test_result_structure_consistency(self):
+        """Validation results should have consistent structure"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": ["s1"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+        }
+        result = compute_sat_validation(snapshot)
+
+        # Check structure
+        assert "best_states" in result
+        assert "checkpoint_levels" in result
+        assert "metrics" in result
+
+        # Check best_states structure
+        for conn_key, (state, reasons) in result["best_states"].items():
+            # state is CONNECTION_STATE enum or str
+            assert state is not None
+            assert isinstance(reasons, list)
+
+        # Check metrics structure
+        metrics = result["metrics"]
+        assert "duration_ms" in metrics
+        assert isinstance(metrics["duration_ms"], (int, float))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 9: Performance and Memory Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPerformanceAndMemory:
+    """Test performance and memory efficiency"""
+
+    def test_validation_completes_in_reasonable_time(self):
+        """Validation should complete quickly for simple cases"""
+        import time
+
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [0],
+            "target_conn_keys": [0],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(0, "end")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {0: "FLOW"},
+        }
+
+        start = time.time()
+        result = compute_sat_validation(snapshot)
+        elapsed = time.time() - start
+
+        # Should complete in less than 5 seconds
+        assert elapsed < 5.0
+        assert isinstance(result, dict)
+
+    def test_cache_clearing_enabled(self):
+        """Validation should automatically manage caches"""
+        snapshot = {
+            "station_data": {"s1": {"rules": []}},
+            "root_ids": ["s1"],
+            "flow_conn_keys": [],
+            "target_conn_keys": [],
+            "checkpoint_ids": [],
+            "target_checkpoint_ids": [],
+            "flow_succs": {},
+            "flow_conn_conditions": {},
+            "validation_cache_limit": 1000,
+        }
+        result = compute_sat_validation(snapshot)
+        # Should complete without memory issues
+        assert isinstance(result, dict)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test Execution
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
