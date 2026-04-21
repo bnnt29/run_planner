@@ -19,6 +19,10 @@ try:
 except ImportError:
 	from items import CONNECTION_STATE, CONDITION_OP  # type: ignore
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Helper functions for validation
+# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _is_cancelled(cancel_event) -> bool:
 	return bool(cancel_event is not None and cancel_event.is_set())
@@ -537,11 +541,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	if compile_workers > 1 and len(station_rule_spans) > 1:
 		with ThreadPoolExecutor(max_workers=min(compile_workers, len(station_rule_spans))) as compile_pool:
 			for station_id, compiled_rules in compile_pool.map(_compile_station_rules, station_rule_spans.items()):
-				rule_entries[station_id] = compiled_rules
+				rule_entries[station_id] = list(compiled_rules)
 	else:
 		for station_item in station_rule_spans.items():
 			station_id, compiled_rules = _compile_station_rules(station_item)
-			rule_entries[station_id] = compiled_rules
+			rule_entries[station_id] = list(compiled_rules)
 
 	def _compile_conn_conditions(conn_item: tuple[int, list[dict]]):
 		conn_key, conds = conn_item
@@ -553,10 +557,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			for conn_key, compiled_conds in compile_pool.map(_compile_conn_conditions, flow_conn_conditions.items()):
 				compiled_flow_conn_conditions[conn_key] = compiled_conds
 	else:
-		compiled_flow_conn_conditions = {
-			conn_key: tuple(_compile_condition(cond) for cond in conds)
-			for conn_key, conds in flow_conn_conditions.items()
-		}
+		compiled_flow_conn_conditions = {}
+		for conn_key, conds in flow_conn_conditions.items():
+			_, compiled = _compile_conn_conditions((conn_key, conds))
+			compiled_flow_conn_conditions[conn_key] = compiled
+	
 	conn_has_conditions = {conn_key: bool(conds) for conn_key, conds in compiled_flow_conn_conditions.items()}
 
 	rule_collapse_map: dict[tuple[str, int, int], tuple[int, ...]] = {}
@@ -677,6 +682,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	counters_dict_cache: dict[int, dict[int, int]] = {}
 	state_limit_reached = False
 	empty_collapse_map: dict[int, tuple[int, ...]] = {}
+	
+	# Early termination tracking removed - can cause incomplete results
 
 	def _append_predecessor(state_id: int, pred_state_id: int):
 		existing = predecessor_states.get(state_id)
@@ -767,7 +774,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 						conn_conds_ok = all(_check_condition_compiled(cond, post_attrs) for cond in conds)
 					conn_condition_cache[cond_cache_key] = conn_conds_ok
 			else:
-				# Keep threaded path lock-free; rely on parallelism instead of shared cache.
+				# Threaded path: lock-free, no shared cache
 				if collapsed_indices:
 					collapsed_lookup = set(collapsed_indices)
 					conn_conds_ok = all(
@@ -828,6 +835,16 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			if state_limit_reached:
 				_safe_status_emit(status_emit, "Validierung: Zustandslimit erreicht, Teilergebnis wird erstellt ...")
 				break
+			
+			# Automatic cache management: periodically clear based on memory pressure
+			queue_progress = len(state_depth)
+			if queue_progress > 0 and queue_progress % 5000 == 0:
+				if cache_limit > 0 and len(attrs_dict_cache) > cache_limit * 0.8:
+					attrs_dict_cache.clear()
+				if cache_limit > 0 and len(conn_condition_cache) > cache_limit * 0.8:
+					conn_condition_cache.clear()
+				if cache_limit > 0 and len(eligible_rules_cache) > cache_limit * 0.8:
+					eligible_rules_cache.clear()
 
 			src_state_id = queue.popleft()
 			depth = state_depth[src_state_id]
@@ -1050,10 +1067,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		if analysis_truncated and conn_key not in success_edges:
 			state = CONNECTION_STATE.UNKNOWN
 			reasons.append("Analyse unvollständig: Zustandslimit erreicht, Ergebnis für diese Verbindung ist offen.")
-			best_states[conn_key] = (state, reasons)
-			continue
-
-		if conn_key in success_edges:
+		elif conn_key in success_edges:
 			if has_conds:
 				state = CONNECTION_STATE.CONDITIONAL_VALID
 				reasons.append("Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig).")
