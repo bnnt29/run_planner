@@ -290,6 +290,28 @@ class TestConditionCompilation:
             _check_condition(cond, state)
             _check_condition_compiled(compiled, state)
 
+    def test_compiled_condition_with_compare_attribute_greater(self):
+        """Compiled conditions should honor compare_attr_id on greater-than checks"""
+        cond = {
+            "attr_id": "source",
+            "compare_attr_id": "threshold",
+            "op": CONDITION_OP.GREATER.value,
+        }
+        compiled = _compile_condition(cond)
+        state = {"source": 7.5, "threshold": 4.0}
+
+        assert _check_condition(cond, state) is True
+        assert _check_condition_compiled(compiled, state) is True
+
+    def test_compiled_condition_unknown_operator_false(self):
+        """Compiled conditions should reject unknown operators"""
+        cond = {"attr_id": "attr1", "op": "DOES_NOT_EXIST"}
+        compiled = _compile_condition(cond)
+        state = {"attr1": 99.0}
+
+        assert _check_condition(cond, state) is False
+        assert _check_condition_compiled(compiled, state) is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 4: Core Validation Logic Tests
@@ -434,6 +456,282 @@ class TestCoreValidationLogic:
         assert metrics["total_checkpoints"] == 2
         assert metrics["target_checkpoints"] == 1
 
+    def test_rule_effect_enables_connection_condition(self):
+        """A station rule should activate a connection condition via its effect"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "gate_open", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [10],
+            "target_conn_keys": [10],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(10, "end")]},
+            "flow_conn_conditions": {
+                10: [
+                    {
+                        "attr_id": "gate_open",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ]
+            },
+            "connection_kinds": {10: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert 10 in result["best_states"]
+        state, reasons = result["best_states"][10]
+        assert state == CONNECTION_STATE.CONDITIONAL_VALID
+        assert reasons
+        assert any("bedingungenabhängig" in reason.lower() for reason in reasons)
+
+    def test_rule_effect_with_arithmetic_update(self):
+        """Arithmetic effects should be visible to downstream connection checks"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "score", "action": "+", "value": 2},
+                            ],
+                        }
+                    ]
+                },
+                "mid": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [11],
+            "target_conn_keys": [11],
+            "checkpoint_ids": ["mid"],
+            "target_checkpoint_ids": ["mid"],
+            "flow_succs": {"start": [(11, "mid")]},
+            "flow_conn_conditions": {
+                11: [
+                    {
+                        "attr_id": "score",
+                        "value": 2,
+                        "op": CONDITION_OP.EQUALS.value,
+                    }
+                ]
+            },
+            "connection_kinds": {11: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert 11 in result["best_states"]
+        state, reasons = result["best_states"][11]
+        assert state == CONNECTION_STATE.CONDITIONAL_VALID
+        assert reasons
+        assert any("gültigen pfad" in reason.lower() for reason in reasons)
+
+    def test_multi_rule_branching_with_multiple_effect_types(self):
+        """Multiple rules with different effect types should produce a stable combined result"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "power", "action": "=", "value": 3},
+                                {"attr_id": "shield", "action": "+", "value": 1},
+                            ],
+                        },
+                        {
+                            "conditions": [
+                                {"attr_id": "power", "op": CONDITION_OP.GREATER_EQ.value, "value": 3},
+                            ],
+                            "effects": [
+                                {"attr_id": "power", "action": "*", "value": 2},
+                            ],
+                        },
+                    ]
+                },
+                "mid": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "shield", "op": CONDITION_OP.EXISTS.value},
+                            ],
+                            "effects": [
+                                {"attr_id": "gate", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [40, 41],
+            "target_conn_keys": [40, 41],
+            "checkpoint_ids": ["mid", "end"],
+            "target_checkpoint_ids": ["mid", "end"],
+            "flow_succs": {
+                "start": [(40, "mid")],
+                "mid": [(41, "end")],
+            },
+            "flow_conn_conditions": {
+                40: [
+                    {
+                        "attr_id": "power",
+                        "op": CONDITION_OP.GREATER_EQ.value,
+                        "value": 3,
+                    }
+                ],
+                41: [
+                    {
+                        "attr_id": "gate",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ],
+            },
+            "connection_kinds": {40: "FLOW", 41: "FLOW"},
+            "apply_all_rule_sets": True,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][40][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][41][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][40][1]
+        assert result["best_states"][41][1]
+
+    def test_wide_branching_with_conflicting_rules(self):
+        """Conflicting rule branches should still resolve to a consistent classification"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "mode", "action": "=", "value": 1},
+                            ],
+                        },
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "mode", "action": "=", "value": 2},
+                            ],
+                        },
+                    ]
+                },
+                "branch_a": {"rules": []},
+                "branch_b": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [42, 43, 44],
+            "target_conn_keys": [42, 43, 44],
+            "checkpoint_ids": ["branch_a", "branch_b", "end"],
+            "target_checkpoint_ids": ["branch_a", "branch_b", "end"],
+            "flow_succs": {
+                "start": [(42, "branch_a"), (43, "branch_b")],
+                "branch_a": [(44, "end")],
+                "branch_b": [(44, "end")],
+            },
+            "flow_conn_conditions": {
+                42: [
+                    {"attr_id": "mode", "op": CONDITION_OP.EQUALS.value, "value": 1},
+                ],
+                43: [
+                    {"attr_id": "mode", "op": CONDITION_OP.EQUALS.value, "value": 2},
+                ],
+                44: [],
+            },
+            "connection_kinds": {42: "FLOW", 43: "FLOW", 44: "FLOW"},
+            "apply_all_rule_sets": False,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][42][0] == CONNECTION_STATE.CONDITIONAL_VALID
+        assert result["best_states"][43][0] == CONNECTION_STATE.CONDITIONAL_VALID
+        assert result["best_states"][44][0] == CONNECTION_STATE.VALID
+        assert all(result["best_states"][key][1] for key in (42, 43, 44))
+
+    def test_rule_chain_updates_attributes_across_multiple_stations(self):
+        """Attribute updates should propagate across several stations in sequence"""
+        snapshot = {
+            "station_data": {
+                "s0": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "a", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "s1": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "a", "op": CONDITION_OP.EXISTS.value},
+                            ],
+                            "effects": [
+                                {"attr_id": "b", "action": "+", "value": 4},
+                            ],
+                        }
+                    ]
+                },
+                "s2": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "b", "op": CONDITION_OP.GREATER_EQ.value, "value": 4},
+                            ],
+                            "effects": [
+                                {"attr_id": "c", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["s0"],
+            "flow_conn_keys": [45, 46, 47],
+            "target_conn_keys": [45, 46, 47],
+            "checkpoint_ids": ["s1", "s2", "end"],
+            "target_checkpoint_ids": ["s1", "s2", "end"],
+            "flow_succs": {
+                "s0": [(45, "s1")],
+                "s1": [(46, "s2")],
+                "s2": [(47, "end")],
+            },
+            "flow_conn_conditions": {
+                45: [
+                    {"attr_id": "a", "op": CONDITION_OP.EXISTS.value},
+                ],
+                46: [
+                    {"attr_id": "b", "op": CONDITION_OP.GREATER_EQ.value, "value": 4},
+                ],
+                47: [
+                    {"attr_id": "c", "op": CONDITION_OP.EXISTS.value},
+                ],
+            },
+            "connection_kinds": {45: "FLOW", 46: "FLOW", 47: "FLOW"},
+            "apply_all_rule_sets": True,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][45][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][46][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][47][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert all(result["best_states"][key][1] for key in (45, 46, 47))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 5: Edge Cases and Error Handling
@@ -536,6 +834,65 @@ class TestEdgeCasesAndErrorHandling:
         assert isinstance(result, dict)
         assert "best_states" in result
 
+    def test_truncated_analysis_marks_connection_unknown(self):
+        """A very low max_states limit should downgrade unresolved connections to UNKNOWN"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "marker", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [20],
+            "target_conn_keys": [20],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(20, "end")]},
+            "flow_conn_conditions": {20: []},
+            "connection_kinds": {20: "FLOW"},
+            "max_states": 1,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert 20 in result["best_states"]
+        state, reasons = result["best_states"][20]
+        assert state == CONNECTION_STATE.UNKNOWN
+        assert any("zustandslimit" in reason.lower() for reason in reasons)
+
+    def test_disconnected_source_is_conditional_invalid(self):
+        """A reachable edge that never reaches a checkpoint should be CONDITIONAL_INVALID"""
+        snapshot = {
+            "station_data": {
+                "root": {"rules": []},
+                "isolated": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["root"],
+            "flow_conn_keys": [21],
+            "target_conn_keys": [21],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "root": [(21, "isolated")],
+            },
+            "flow_conn_conditions": {21: []},
+            "connection_kinds": {21: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert 21 in result["best_states"]
+        state, reasons = result["best_states"][21]
+        assert state == CONNECTION_STATE.CONDITIONAL_INVALID
+        assert any("endstation" in reason.lower() for reason in reasons)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 6: CONNECTION_STATE Classification Tests
@@ -595,6 +952,108 @@ class TestConnectionStateClassification:
             assert isinstance(reasons, list)
             for reason in reasons:
                 assert isinstance(reason, str)
+
+    def test_valid_and_conditional_valid_classification(self):
+        """Connections should distinguish unconditional and conditional validity"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "flag", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "mid": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [30, 31],
+            "target_conn_keys": [30, 31],
+            "checkpoint_ids": ["mid", "end"],
+            "target_checkpoint_ids": ["mid", "end"],
+            "flow_succs": {
+                "start": [(30, "mid"), (31, "end")],
+            },
+            "flow_conn_conditions": {
+                30: [],
+                31: [
+                    {
+                        "attr_id": "flag",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ],
+            },
+            "connection_kinds": {30: "FLOW", 31: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][30][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][31][0] == CONNECTION_STATE.CONDITIONAL_VALID
+        assert any("gültigen pfad" in reason.lower() for reason in result["best_states"][30][1])
+        assert any("bedingungenabhängig" in reason.lower() for reason in result["best_states"][31][1])
+
+    def test_conditional_invalid_classification_has_failed_condition_reason(self):
+        """Failed edge conditions should be reported as INVALID with a condition reason"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [32],
+            "target_conn_keys": [32],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(32, "end")]},
+            "flow_conn_conditions": {
+                32: [
+                    {
+                        "attr_id": "never_set",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ]
+            },
+            "connection_kinds": {32: "FLOW"},
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][32][0] == CONNECTION_STATE.INVALID
+        assert any("bedingungen" in reason.lower() for reason in result["best_states"][32][1])
+
+    def test_state_limit_triggers_unknown_classification(self):
+        """Truncated analyses should surface UNKNOWN classifications"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "flag", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [33],
+            "target_conn_keys": [33],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(33, "end")]},
+            "flow_conn_conditions": {33: []},
+            "connection_kinds": {33: "FLOW"},
+            "max_states": 1,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][33][0] == CONNECTION_STATE.UNKNOWN
+        assert any("zustandslimit" in reason.lower() for reason in result["best_states"][33][1])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -676,6 +1135,140 @@ class TestRegressionCases:
 
         # Results should be identical
         assert result1.get("best_states") == result2.get("best_states")
+
+    def test_intertwined_cycles_with_exit_path(self):
+        """Two intersecting cycles with an exit path should terminate and keep the exit reachable"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "loop_seed", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "loop_a": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "loop_seed", "op": CONDITION_OP.EXISTS.value},
+                            ],
+                            "effects": [
+                                {"attr_id": "loop_a_hits", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "loop_b": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "loop_a_hits", "op": CONDITION_OP.GREATER_EQ.value, "value": 1},
+                            ],
+                            "effects": [
+                                {"attr_id": "loop_b_hits", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "exit": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [50, 51, 52, 53],
+            "target_conn_keys": [50, 51, 52, 53],
+            "checkpoint_ids": ["loop_a", "loop_b", "exit"],
+            "target_checkpoint_ids": ["loop_a", "loop_b", "exit"],
+            "flow_succs": {
+                "start": [(50, "loop_a")],
+                "loop_a": [(51, "loop_b"), (52, "exit")],
+                "loop_b": [(53, "loop_a")],
+            },
+            "flow_conn_conditions": {
+                50: [],
+                51: [
+                    {"attr_id": "loop_seed", "op": CONDITION_OP.EXISTS.value},
+                ],
+                52: [
+                    {"attr_id": "loop_seed", "op": CONDITION_OP.EXISTS.value},
+                ],
+                53: [
+                    {"attr_id": "loop_a_hits", "op": CONDITION_OP.GREATER_EQ.value, "value": 1},
+                ],
+            },
+            "connection_kinds": {50: "FLOW", 51: "FLOW", 52: "FLOW", 53: "FLOW"},
+            "max_depth": 30,
+            "max_states": 500,
+            "apply_all_rule_sets": True,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][50][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][51][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][52][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][53][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert any("gültigen pfad" in reason.lower() or "bedingungenabhängig" in reason.lower() for reason in result["best_states"][52][1])
+
+    def test_self_loop_with_exit_and_condition_progression(self):
+        """A self-loop that increases an attribute should not block the exit path"""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "ticks", "action": "=", "value": 0},
+                            ],
+                        }
+                    ]
+                },
+                "spinner": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "ticks", "op": CONDITION_OP.LESS.value, "value": 3},
+                            ],
+                            "effects": [
+                                {"attr_id": "ticks", "action": "+", "value": 1},
+                                {"attr_id": "seen", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [54, 55, 56],
+            "target_conn_keys": [54, 55, 56],
+            "checkpoint_ids": ["spinner", "end"],
+            "target_checkpoint_ids": ["spinner", "end"],
+            "flow_succs": {
+                "start": [(54, "spinner")],
+                "spinner": [(55, "spinner"), (56, "end")],
+            },
+            "flow_conn_conditions": {
+                54: [],
+                55: [
+                    {"attr_id": "ticks", "op": CONDITION_OP.LESS.value, "value": 3},
+                ],
+                56: [
+                    {"attr_id": "seen", "op": CONDITION_OP.GREATER_EQ.value, "value": 1},
+                ],
+            },
+            "connection_kinds": {54: "FLOW", 55: "FLOW", 56: "FLOW"},
+            "max_depth": 25,
+            "max_states": 500,
+            "apply_all_rule_sets": True,
+        }
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][54][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][55][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][56][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert any("gültigen pfad" in reason.lower() or "bedingungenabhängig" in reason.lower() for reason in result["best_states"][56][1])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
