@@ -27,6 +27,17 @@ from run_planner.sat_validation import (
     _check_condition,
     _compile_condition,
     _check_condition_compiled,
+    _condition_implies_condition,
+    _apply_effects_compiled,
+    _apply_effects,
+    _graph_reverse,
+    _graph_can_reach_checkpoint,
+    _sanitize_symbol,
+    _build_nusmv_model,
+    _write_nusmv_file,
+    _find_nusmv_binary,
+    _run_single_nusmv_reachability,
+    _run_nusmv_reachability,
     compute_sat_validation,
 )
 from run_planner.items import CONNECTION_STATE, CONDITION_OP
@@ -311,6 +322,253 @@ class TestConditionCompilation:
 
         assert _check_condition(cond, state) is False
         assert _check_condition_compiled(compiled, state) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3B: Internal Helper Coverage Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInternalHelperCoverage:
+    """Test internal helper logic that is otherwise only hit in complex runtime paths"""
+
+    def test_condition_implies_condition_with_compare_attribute_is_false(self):
+        """Any comparison involving compare_attr_id should be rejected by the conservative collapse logic"""
+        source = _compile_condition({
+            "attr_id": "a",
+            "compare_attr_id": "b",
+            "op": CONDITION_OP.GREATER.value,
+            "value": 1,
+        })
+        target = _compile_condition({
+            "attr_id": "a",
+            "op": CONDITION_OP.EXISTS.value,
+        })
+
+        assert _condition_implies_condition(source, target) is False
+
+    def test_condition_implies_condition_supported_paths(self):
+        """Exercise the positive implication branches for the supported comparisons"""
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.GREATER.value, "value": 2}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EXISTS.value}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.GREATER_EQ.value, "value": 1}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EXISTS.value}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 5}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.GREATER.value, "value": 4}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 5}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.GREATER_EQ.value, "value": 5}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 2}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.LESS.value, "value": 3}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 2}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.LESS_EQ.value, "value": 2}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 5}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.NOT_EQUALS.value, "value": 4}),
+        ) is True
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 0}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.NOT_EXISTS.value}),
+        ) is True
+
+    def test_condition_implies_condition_negative_paths(self):
+        """Exercise the conservative false branches for implication checks"""
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.LESS.value, "value": 2}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EXISTS.value}),
+        ) is False
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.GREATER.value, "value": 2}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.NOT_EQUALS.value, "value": 2}),
+        ) is False
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.NOT_EQUALS.value, "value": 5}),
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EXISTS.value}),
+        ) is False
+        assert _condition_implies_condition(
+            _compile_condition({"attr_id": "a", "op": CONDITION_OP.EXISTS.value}),
+            _compile_condition({"attr_id": "b", "op": CONDITION_OP.EXISTS.value}),
+        ) is False
+
+    def test_apply_effects_compiled_all_arithmetic_branches(self):
+        """Compiled effects should cover all arithmetic and default branches"""
+        base = {"x": 10.0}
+        effects = [
+            ("x", "+", 5.0),
+            ("x", "-", 3.0),
+            ("x", "*", 2.0),
+            ("x", "/", 4.0),
+            ("x", "%", 2.0),
+            ("y", "=", 7.0),
+            (None, "+", 1.0),
+        ]
+
+        result = _apply_effects_compiled(base, effects)
+        assert result["x"] == 0.0
+        assert result["y"] == 7.0
+        assert base == {"x": 10.0}
+
+    def test_apply_effects_compiled_skip_zero_division(self):
+        """Division and modulo by zero should leave the current value untouched"""
+        result = _apply_effects_compiled({"x": 9.0}, [("x", "/", 0.0), ("x", "%", 0.0)])
+        assert result["x"] == 9.0
+
+    def test_apply_effects_dict_version(self):
+        """The dictionary-based effect helper should follow the same update branches"""
+        result = _apply_effects(
+            {"x": 2.0},
+            [
+                {"attr_id": "x", "action": "+", "value": 3},
+                {"attr_id": "x", "action": "-", "value": 1},
+                {"attr_id": "x", "action": "*", "value": 4},
+                {"attr_id": "x", "action": "/", "value": 2},
+                {"attr_id": "x", "action": "%", "value": 3},
+                {"attr_id": "y", "action": "=", "value": 8},
+                {"attr_id": None, "action": "=", "value": 1},
+            ],
+        )
+        assert result["x"] == 2.0
+        assert result["y"] == 8.0
+
+    def test_graph_reverse_and_reachability(self):
+        """Graph reverse and checkpoint reachability should follow the backward closure"""
+        flow_succs = {
+            "a": [(1, "b")],
+            "b": [(2, "c")],
+            "d": [(3, "c")],
+        }
+        reversed_graph = _graph_reverse(flow_succs)
+        reachable = _graph_can_reach_checkpoint(flow_succs, {"c"})
+
+        assert reversed_graph["b"] == ["a"]
+        assert set(reversed_graph["c"]) == {"b", "d"}
+        assert reachable == {"a", "b", "c", "d"}
+
+    def test_sanitize_symbol_and_nusmv_model(self):
+        """Sanitizing symbols and building the NuSMV model should cover the model text path"""
+        assert _sanitize_symbol("hello world!") == "hello_world"
+        assert _sanitize_symbol("!!!") == "id"
+
+        snapshot = {
+            "station_data": {"start node": {"rules": []}, "end-node": {"rules": []}},
+            "root_ids": ["start node"],
+            "checkpoint_ids": ["end-node"],
+            "flow_succs": {"start node": [(1, "end-node")]},
+        }
+        model = _build_nusmv_model(snapshot)
+        assert "MODULE main" in model
+        assert "DEFINE end_end_node" in model
+        assert "n_start_node" in model
+
+    def test_build_nusmv_model_without_station_data(self):
+        """An empty snapshot should still generate a minimal dead-state model"""
+        model = _build_nusmv_model({})
+        assert "n_dead" in model
+        assert "init(node) := {n_dead}" in model
+
+    def test_write_nusmv_file_and_find_binary(self):
+        """Writing the model file should yield a readable temp path and binary lookup should be harmless"""
+        snapshot = {
+            "station_data": {"s": {"rules": []}},
+            "root_ids": ["s"],
+            "checkpoint_ids": ["s"],
+            "flow_succs": {},
+        }
+        path = _write_nusmv_file(snapshot)
+        assert path is not None
+        assert os.path.exists(path)
+        assert _find_nusmv_binary() is None or isinstance(_find_nusmv_binary(), str)
+        os.remove(path)
+
+    def test_run_single_nusmv_reachability_true_and_false_outputs(self):
+        """The single-check helper should parse true/false outputs correctly"""
+
+        class DummyResult:
+            def __init__(self, stdout: str, stderr: str = ""):
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with patch("run_planner.sat_validation.subprocess.run", return_value=DummyResult("is true")):
+            assert _run_single_nusmv_reachability("/bin/echo", "/tmp/model.smv", "c1") == ("c1", True)
+
+        with patch("run_planner.sat_validation.subprocess.run", return_value=DummyResult("is false")):
+            assert _run_single_nusmv_reachability("/bin/echo", "/tmp/model.smv", "c1") == ("c1", False)
+
+    def test_run_single_nusmv_reachability_exception_branch(self):
+        """Exception handling in the single-check helper should return None"""
+        with patch("run_planner.sat_validation.subprocess.run", side_effect=RuntimeError("boom")):
+            assert _run_single_nusmv_reachability("/bin/echo", "/tmp/model.smv", "c1") is None
+
+    def test_run_nusmv_reachability_empty_inputs(self):
+        """Empty checkpoint lists should short-circuit the reachability helper"""
+        assert _run_nusmv_reachability("/tmp/does-not-matter.smv", []) == {}
+
+    def test_run_nusmv_reachability_sequential_and_parallel_branches(self):
+        """Both sequential and threaded reachability paths should be exercised"""
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value="/bin/echo"):
+            with patch("run_planner.sat_validation._run_single_nusmv_reachability", side_effect=[("a", True), ("b", False)]):
+                sequential = _run_nusmv_reachability("/tmp/model.smv", ["a", "b"], max_workers=1)
+                assert sequential == {"a": True, "b": False}
+
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value="/bin/echo"):
+            with patch("run_planner.sat_validation._run_single_nusmv_reachability", side_effect=[("a", True), ("b", True)]):
+                parallel = _run_nusmv_reachability("/tmp/model.smv", ["a", "b"], max_workers=2)
+                assert parallel == {"a": True, "b": True}
+
+    def test_run_nusmv_reachability_cancelled_before_iteration(self):
+        """A cancelled event should stop the reachability scan early"""
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = True
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value="/bin/echo"):
+            with patch("run_planner.sat_validation._run_single_nusmv_reachability", return_value=("a", True)):
+                result = _run_nusmv_reachability("/tmp/model.smv", ["a", "b"], cancel_event=cancel_event, max_workers=1)
+                assert result == {}
+
+    def test_run_nusmv_reachability_binary_missing(self):
+        """Missing NuSMV binaries should return an empty result set"""
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value=None):
+            assert _run_nusmv_reachability("/tmp/model.smv", ["a"]) == {}
+
+    def test_compute_sat_validation_with_nusmv_metrics(self):
+        """A mocked NuSMV path should reach the metrics code that records binary availability"""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [90],
+            "target_conn_keys": [90],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(90, "end")]},
+            "flow_conn_conditions": {},
+            "connection_kinds": {90: "FLOW"},
+            "keep_smv_file": True,
+        }
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value="/bin/echo"):
+            with patch("run_planner.sat_validation._write_nusmv_file", return_value="/tmp/fake_model.smv"):
+                with patch("run_planner.sat_validation._run_nusmv_reachability", return_value={"end": True}):
+                    result = compute_sat_validation(snapshot)
+
+        assert result["metrics"]["nusmv_available"] is True
+        assert result["metrics"]["nusmv_checkpoint_reachable"] == 1
+        assert result["metrics"]["smv_file"] == "/tmp/fake_model.smv"
+        assert result["best_states"][90][0] == CONNECTION_STATE.VALID
+
+    def test_run_single_nusmv_reachability_failure_path(self):
+        """An invalid binary path should fall back to None and exercise the exception handler"""
+        assert _run_single_nusmv_reachability("/definitely/not/a/binary", "/tmp/nope.smv", "c1") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
