@@ -96,11 +96,11 @@ except ImportError:
     )
 
 try:
-    from .validate import FlowScene as ValidationFlowScene
-    from .validate import CONNECTION_KIND
+    from .validate_env import FlowScene as ValidationFlowScene
+    from .validate_env import CONNECTION_KIND
 except ImportError:
-    from validate import FlowScene as ValidationFlowScene
-    from validate import CONNECTION_KIND
+    from run_planner.validate_env import FlowScene as ValidationFlowScene
+    from run_planner.validate_env import CONNECTION_KIND
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -239,6 +239,12 @@ class ConditionRow(QWidget):
         self.op.currentIndexChanged.connect(self._on_op)
         self.op.currentIndexChanged.connect(lambda *_: self.changed.emit())
 
+        self.compare = QComboBox()
+        self.compare.setFixedWidth(160)
+        self._refresh_compare_targets(getattr(cond, "compare_attribute", None))
+        self.compare.currentIndexChanged.connect(self._on_compare)
+        self.compare.currentIndexChanged.connect(lambda *_: self.changed.emit())
+
         self.val = QDoubleSpinBox()
         self.val.setRange(-float('inf'), float('inf'))
         self.val.setValue(cond.value)
@@ -256,8 +262,27 @@ class ConditionRow(QWidget):
 
         lo.addWidget(self.attr)
         lo.addWidget(self.op)
+        lo.addWidget(self.compare)
         lo.addWidget(self.val)
         lo.addWidget(btn)
+
+    def _refresh_compare_targets(self, selected_attr=None):
+        self.compare.blockSignals(True)
+        self.compare.clear()
+        self.compare.addItem("individuell", None)
+        seen = set()
+        for item in self._attribute_options:
+            if not isinstance(item, AttributeItem):
+                continue
+            if item in seen:
+                continue
+            self.compare.addItem(item.name, item)
+            seen.add(item)
+        if isinstance(selected_attr, AttributeItem) and selected_attr not in seen:
+            self.compare.addItem(selected_attr.name, selected_attr)
+        idx = self.compare.findData(selected_attr)
+        self.compare.setCurrentIndex(max(0, idx))
+        self.compare.blockSignals(False)
 
     def _ops_for_subject(self):
         return [
@@ -280,17 +305,31 @@ class ConditionRow(QWidget):
         idx = self.op.findData(current)
         self.op.setCurrentIndex(max(idx, 0))
         self.op.blockSignals(False)
-        self._on_op(self.op.currentIndex())
+        self._sync_value_visibility()
+
+    def _requires_rhs(self) -> bool:
+        op_key = self.op.currentData()
+        return op_key not in {CONDITION_OP.EXISTS, CONDITION_OP.NOT_EXISTS}
+
+    def _sync_value_visibility(self):
+        requires_rhs = self._requires_rhs()
+        compare_attr = self.compare.currentData()
+        self.compare.setVisible(requires_rhs)
+        show_value = requires_rhs and compare_attr is None
+        self.val.setVisible(show_value)
 
     def _on_op(self, idx):
-        op_key = self.op.itemData(idx)
-        self.val.setVisible(op_key not in {CONDITION_OP.EXISTS, CONDITION_OP.NOT_EXISTS})
+        self._sync_value_visibility()
+
+    def _on_compare(self, idx):
+        self._sync_value_visibility()
 
     def get(self) -> Condition:
         return Condition(
             self.attr.currentData() or None,
             self._ops_for_subject()[self.op.currentIndex()],
-            self.val.value()
+            self.val.value(),
+            self.compare.currentData() or None,
         )
 
 
@@ -431,7 +470,7 @@ class RuleRow(QWidget):
 
     @staticmethod
     def _copy_condition(cond: Condition) -> Condition:
-        return Condition(cond.attribute, cond.operator, cond.value)
+        return Condition(cond.attribute, cond.operator, cond.value, cond.compare_attribute)
 
     def _add_cond(self, cond: Condition):
         row = ConditionRow(cond, self._attribute_options)
@@ -686,7 +725,7 @@ class ConnectionDialog(SettingsDialog):
 
     @staticmethod
     def _copy_condition(cond: Condition) -> Condition:
-        return Condition(cond.attribute, cond.operator, cond.value)
+        return Condition(cond.attribute, cond.operator, cond.value, cond.compare_attribute)
 
     def _build(self, conn: ConnectionItem):
         root = QVBoxLayout(self)
@@ -1340,7 +1379,7 @@ class FlowScene(ValidationFlowScene):
 
     def open_connection_editor(self, conn: ConnectionItem):
         parent = self.views()[0] if self.views() else None
-        previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
+        previous_conditions = [Condition(c.attribute, c.operator, c.value, c.compare_attribute) for c in conn.conditions]
         previous_name = conn.name
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
 

@@ -452,7 +452,7 @@ class FlowScene(QGraphicsScene):
         except ImportError:
             from ui import ConnectionDialog  # type: ignore
         parent = self.views()[0] if self.views() else None
-        previous_conditions = [Condition(c.attribute, c.operator, c.value) for c in conn.conditions]
+        previous_conditions = [Condition(c.attribute, c.operator, c.value, c.compare_attribute) for c in conn.conditions]
         previous_name = conn.name
         dlg    = ConnectionDialog(conn, self._attribute_items(), parent)
 
@@ -505,9 +505,13 @@ class FlowScene(QGraphicsScene):
     def _snapshot_condition(cond: Condition) -> dict:
         attr = getattr(cond, "attribute", None)
         attr_name = getattr(attr, "name", str(attr)) if attr is not None else ""
+        compare_attr = getattr(cond, "compare_attribute", None)
+        compare_attr_name = getattr(compare_attr, "name", str(compare_attr)) if compare_attr is not None else ""
         return {
             "attr_id": getattr(attr, "node_id", None),
             "attr_name": attr_name,
+            "compare_attr_id": getattr(compare_attr, "node_id", None),
+            "compare_attr_name": compare_attr_name,
             "op": cond.operator.value if isinstance(cond.operator, CONDITION_OP) else str(cond.operator),
             "value": float(getattr(cond, "value", 0.0)),
         }
@@ -524,6 +528,7 @@ class FlowScene(QGraphicsScene):
     @staticmethod
     def _snapshot_cond_text(cond: dict) -> str:
         name = cond.get("attr_name", "")
+        compare_name = cond.get("compare_attr_name", "")
         op = cond.get("op", CONDITION_OP.EXISTS.value)
         value = cond.get("value", 0.0)
         prefix = f"⟨{name}⟩"
@@ -531,31 +536,36 @@ class FlowScene(QGraphicsScene):
             return f"{prefix} vorhanden"
         if op == CONDITION_OP.NOT_EXISTS.value:
             return f"{prefix} fehlt"
+        if compare_name:
+            return f"{prefix} {op} ⟨{compare_name}⟩"
         return f"{prefix} {op} {value}"
 
     @staticmethod
     def _snapshot_check_condition(cond: dict, state: dict) -> bool:
         attr_id = cond.get("attr_id")
+        compare_attr_id = cond.get("compare_attr_id")
         op = cond.get("op", CONDITION_OP.EXISTS.value)
         value = float(cond.get("value", 0.0))
         count = 0.0 if attr_id is None or attr_id not in state or state[attr_id] is None else state[attr_id]
+        compare_count = 0.0 if compare_attr_id is None or compare_attr_id not in state or state[compare_attr_id] is None else state[compare_attr_id]
+        rhs = compare_count if compare_attr_id is not None else value
 
         if op == CONDITION_OP.EXISTS.value:
             return count > 0
         if op == CONDITION_OP.NOT_EXISTS.value:
             return count == 0
         if op == CONDITION_OP.EQUALS.value:
-            return count == value
+            return count == rhs
         if op == CONDITION_OP.NOT_EQUALS.value:
-            return count != value
+            return count != rhs
         if op == CONDITION_OP.GREATER.value:
-            return count > value
+            return count > rhs
         if op == CONDITION_OP.GREATER_EQ.value:
-            return count >= value
+            return count >= rhs
         if op == CONDITION_OP.LESS.value:
-            return count < value
+            return count < rhs
         if op == CONDITION_OP.LESS_EQ.value:
-            return count <= value
+            return count <= rhs
         return False
 
     @staticmethod

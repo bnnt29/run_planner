@@ -441,6 +441,7 @@ class StationItem(ObjectItem):
     def _serialize_condition(cond: "Condition") -> dict:
         return {
             "attribute": getattr(cond.attribute, "node_id", None),
+            "compare_attribute": getattr(cond.compare_attribute, "node_id", None),
             "operator": cond.operator.value if isinstance(cond.operator, CONDITION_OP) else str(cond.operator),
             "value": cond.value,
         }
@@ -460,6 +461,7 @@ class StationItem(ObjectItem):
             attr,
             operator,
             data.get("value", 0.0),
+            node_map.get(data.get("compare_attribute")),
         )
 
     @staticmethod
@@ -1053,10 +1055,17 @@ class CONDITION_OP(str, Enum):
 class Condition:
     """Vorbedingung an einem Produktattribut."""
 
-    def __init__(self, attribute:AttributeItem = None, operator:CONDITION_OP=CONDITION_OP.EXISTS, value:float=0.0):
+    def __init__(
+        self,
+        attribute: AttributeItem = None,
+        operator: CONDITION_OP = CONDITION_OP.EXISTS,
+        value: float = 0.0,
+        compare_attribute: AttributeItem = None,
+    ):
         self.attribute:AttributeItem = attribute
         self.operator:CONDITION_OP   = operator
         self.value:float     = value
+        self.compare_attribute: AttributeItem = compare_attribute
 
     def _as_number(self, value):
         try:
@@ -1066,23 +1075,29 @@ class Condition:
 
     def check(self, attrs: dict) -> bool:
         count = 0.0 if self.attribute not in attrs or attrs[self.attribute] is None else attrs[self.attribute]
+        compare_count = (
+            0.0
+            if self.compare_attribute is None or self.compare_attribute not in attrs or attrs[self.compare_attribute] is None
+            else attrs[self.compare_attribute]
+        )
+        rhs = compare_count if self.compare_attribute is not None else self._as_number(self.value)
         match(self.operator):
             case CONDITION_OP.EXISTS:
                 return count > 0
             case CONDITION_OP.NOT_EXISTS:
                 return count == 0
             case CONDITION_OP.EQUALS:
-                return count == self._as_number(self.value)
+                return count == rhs
             case CONDITION_OP.NOT_EQUALS:
-                return count != self._as_number(self.value)
+                return count != rhs
             case CONDITION_OP.GREATER:
-                return count > self._as_number(self.value)
+                return count > rhs
             case CONDITION_OP.GREATER_EQ:
-                return count >= self._as_number(self.value)
+                return count >= rhs
             case CONDITION_OP.LESS:
-                return count < self._as_number(self.value)
+                return count < rhs
             case CONDITION_OP.LESS_EQ:
-                return count <= self._as_number(self.value)
+                return count <= rhs
 
     def __str__(self):
         a = self.attribute.name if isinstance(self.attribute, AttributeItem) else str(self.attribute)
@@ -1092,6 +1107,8 @@ class Condition:
                 return f"{prefix} vorhanden"
             case CONDITION_OP.NOT_EXISTS:
                 return f"{prefix} fehlt"
+        if isinstance(self.compare_attribute, AttributeItem):
+            return f"{prefix} {self.operator.value} ⟨{self.compare_attribute.name}⟩"
         return f"{prefix} {self.operator.value} {self.value}"
 
 class EFFECT_OP(str, Enum):
@@ -1184,7 +1201,7 @@ class StationRule:
 
     def clone(self) -> "StationRule":
         return StationRule(
-            conditions=[Condition(c.attribute, c.operator, c.value) for c in self.conditions],
+            conditions=[Condition(c.attribute, c.operator, c.value, c.compare_attribute) for c in self.conditions],
             effects=[Effect(e.attribute, e.action, e.value) for e in self.effects],
             max_traversals=self.max_traversals,
             group_number=self.group_number,
