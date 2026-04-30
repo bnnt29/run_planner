@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import bisect
 import os
 import shutil
 import subprocess
@@ -41,6 +42,15 @@ def _to_float(value) -> float:
 		return float(value)
 	except (TypeError, ValueError):
 		return 0.0
+
+
+def _default_parallel_workers(cap: int | None = None, reserve_cores: int = 0) -> int:
+	"""Compute a practical default worker count close to available CPU cores."""
+	cpu_count = max(1, os.cpu_count() or 1)
+	workers = max(1, cpu_count - max(0, reserve_cores))
+	if cap is not None:
+		workers = min(workers, max(1, int(cap)))
+	return workers
 
 
 def _check_condition(cond: dict, state: dict[str, float]) -> bool:
@@ -245,6 +255,112 @@ def _canonical_attrs(attrs: dict[str, float]) -> tuple[tuple[str, float], ...]:
 	return tuple(sorted((str(k), round(_to_float(v), 8)) for k, v in attrs.items()))
 
 
+def _collect_condition_attr_metadata(
+	station_data: dict,
+	flow_conn_conditions: dict[int, list[dict]],
+) -> tuple[set[str], set[str], dict[str, tuple[float, ...]]]:
+	relevant_attrs: set[str] = set()
+	compare_attrs: set[str] = set()
+	attr_thresholds: dict[str, set[float]] = {}
+
+	def _register_cond(cond: dict):
+		attr_id = cond.get("attr_id")
+		compare_attr_id = cond.get("compare_attr_id")
+		op = cond.get("op", CONDITION_OP.EXISTS.value)
+		value = _to_float(cond.get("value", 0.0))
+
+		if attr_id is None:
+			return
+
+		relevant_attrs.add(attr_id)
+		if compare_attr_id is not None:
+			relevant_attrs.add(compare_attr_id)
+			compare_attrs.add(attr_id)
+			compare_attrs.add(compare_attr_id)
+			return
+
+		thresholds = attr_thresholds.setdefault(attr_id, set())
+		if op in (
+			CONDITION_OP.EXISTS.value,
+			CONDITION_OP.NOT_EXISTS.value,
+			CONDITION_OP.EQUALS.value,
+			CONDITION_OP.NOT_EQUALS.value,
+			CONDITION_OP.GREATER.value,
+			CONDITION_OP.GREATER_EQ.value,
+			CONDITION_OP.LESS.value,
+			CONDITION_OP.LESS_EQ.value,
+		):
+			thresholds.add(value if op not in (CONDITION_OP.EXISTS.value, CONDITION_OP.NOT_EXISTS.value) else 0.0)
+
+	for station in station_data.values():
+		for rule in station.get("rules", []):
+			for cond in rule.get("conditions", []):
+				_register_cond(cond)
+
+	for conds in flow_conn_conditions.values():
+		for cond in conds:
+			_register_cond(cond)
+
+	# Arithmetic/set effects can shift values across buckets in non-equivalent ways.
+	# Only attributes that participate in attribute-vs-attribute comparisons need
+	# exact values. Effect-touched attributes still get threshold bucketing unless
+	# they are referenced by such a comparison.
+
+	frozen_thresholds = {
+		attr_id: tuple(sorted(values))
+		for attr_id, values in attr_thresholds.items()
+	}
+	return relevant_attrs, compare_attrs, frozen_thresholds
+
+
+def _normalize_attr_value(
+	attr_id: str,
+	value: float,
+	compare_attrs: set[str],
+	attr_thresholds: dict[str, tuple[float, ...]],
+):
+	# Attributes involved in attribute-vs-attribute comparisons keep numeric precision.
+	if attr_id in compare_attrs:
+		return round(value, 8)
+
+	thresholds = attr_thresholds.get(attr_id, ())
+	if not thresholds:
+		return round(value, 8)
+
+	for pivot in thresholds:
+		if abs(value - pivot) <= 1e-8:
+			return round(pivot, 8)
+
+	if value < thresholds[0]:
+		return round(value, 8)
+
+	# Bucket values by interval between known condition pivots.
+	idx = bisect.bisect_left(thresholds, value)
+	if idx <= 0:
+		return round(thresholds[0] - 1.0, 8)
+	if idx >= len(thresholds):
+		return round(thresholds[-1] + 1.0, 8)
+	left = thresholds[idx - 1]
+	right = thresholds[idx]
+	return round((left + right) / 2.0, 8)
+
+
+def _canonical_attrs_condition_aware(
+	attrs: dict[str, float],
+	relevant_attrs: set[str],
+	compare_attrs: set[str],
+	attr_thresholds: dict[str, tuple[float, ...]],
+) -> tuple[tuple[str, float], ...]:
+	if not relevant_attrs:
+		return tuple()
+
+	filtered: list[tuple[str, float]] = []
+	for attr_id in relevant_attrs:
+		value = _to_float(attrs.get(attr_id, 0.0))
+		filtered.append((attr_id, _normalize_attr_value(attr_id, value, compare_attrs, attr_thresholds)))
+	return tuple(sorted(filtered))
+
+
 def _graph_reverse(flow_succs: dict[str, list[tuple[int, str]]]) -> dict[str, list[str]]:
 	rev: dict[str, list[str]] = {sid: [] for sid in flow_succs.keys()}
 	for src, entries in flow_succs.items():
@@ -268,6 +384,165 @@ def _graph_can_reach_checkpoint(
 			seen.add(pred)
 			queue.append(pred)
 	return seen
+
+
+def _graph_strongly_connected_components(
+	flow_succs: dict[str, list[tuple[int, str]]],
+) -> tuple[dict[str, int], list[tuple[str, ...]], set[int]]:
+	"""Return SCC ids per station, the SCC members, and cyclic SCC ids."""
+	index = 0
+	stack: list[str] = []
+	on_stack: set[str] = set()
+	indices: dict[str, int] = {}
+	lowlinks: dict[str, int] = {}
+	component_by_node: dict[str, int] = {}
+	components: list[tuple[str, ...]] = []
+	cyclic_component_ids: set[int] = set()
+
+	all_nodes: set[str] = set(flow_succs.keys())
+	for entries in flow_succs.values():
+		for _, dst in entries:
+			all_nodes.add(dst)
+
+	def strongconnect(node: str):
+		nonlocal index
+		indices[node] = index
+		lowlinks[node] = index
+		index += 1
+		stack.append(node)
+		on_stack.add(node)
+
+		for _, dst in flow_succs.get(node, []):
+			if dst not in indices:
+				strongconnect(dst)
+				lowlinks[node] = min(lowlinks[node], lowlinks[dst])
+			elif dst in on_stack:
+				lowlinks[node] = min(lowlinks[node], indices[dst])
+
+		if lowlinks[node] == indices[node]:
+			component: list[str] = []
+			while True:
+				top = stack.pop()
+				on_stack.remove(top)
+				component.append(top)
+				if top == node:
+					break
+
+			component_id = len(components)
+			components.append(tuple(component))
+			for member in component:
+				component_by_node[member] = component_id
+
+			if len(component) > 1:
+				cyclic_component_ids.add(component_id)
+			else:
+				only = component[0]
+				if any(dst == only for _, dst in flow_succs.get(only, [])):
+					cyclic_component_ids.add(component_id)
+
+	for node in all_nodes:
+		if node not in indices:
+			strongconnect(node)
+
+	return component_by_node, components, cyclic_component_ids
+
+
+
+def _graph_nodes_in_cycles(flow_succs: dict[str, list[tuple[int, str]]]) -> set[str]:
+	"""Return station ids that belong to at least one directed cycle."""
+	component_by_node, _, cyclic_component_ids = _graph_strongly_connected_components(flow_succs)
+	return {
+		node
+		for node, component_id in component_by_node.items()
+		if component_id in cyclic_component_ids
+	}
+
+
+def _graph_reachable_from_roots(
+	flow_succs: dict[str, list[tuple[int, str]]],
+	root_ids: list[str],
+) -> set[str]:
+	seen = set(root_ids)
+	queue = deque(root_ids)
+	while queue:
+		node = queue.popleft()
+		for _, dst in flow_succs.get(node, []):
+			if dst in seen:
+				continue
+			seen.add(dst)
+			queue.append(dst)
+	return seen
+
+
+def _compute_ruleless_static_validation(
+	station_data: dict,
+	root_ids: list[str],
+	flow_succs: dict[str, list[tuple[int, str]]],
+	flow_conn_conditions: dict[int, list[dict]],
+	target_conn_keys: set[int],
+	checkpoint_ids: set[str],
+	target_checkpoint_ids: set[str],
+) -> tuple[dict[int, tuple[CONNECTION_STATE, list[str]]], dict[str, list[int]], dict[str, int]]:
+	# Without station rules, attribute state is constant (empty), so condition checks are static.
+	empty_state: dict[str, float] = {}
+	active_succs: dict[str, list[tuple[int, str]]] = {sid: [] for sid in station_data.keys()}
+	edge_src_reachable: set[int] = set()
+	edge_taken: set[int] = set()
+	edge_condition_failed: set[int] = set()
+
+	reachable_nodes = _graph_reachable_from_roots(flow_succs, root_ids)
+	for src_id in reachable_nodes:
+		for conn_key, dst_id in flow_succs.get(src_id, []):
+			if conn_key in target_conn_keys:
+				edge_src_reachable.add(conn_key)
+			conds = flow_conn_conditions.get(conn_key, [])
+			if all(_check_condition(cond, empty_state) for cond in conds):
+				active_succs.setdefault(src_id, []).append((conn_key, dst_id))
+				if conn_key in target_conn_keys:
+					edge_taken.add(conn_key)
+			elif conn_key in target_conn_keys:
+				edge_condition_failed.add(conn_key)
+
+	active_reachable = _graph_reachable_from_roots(active_succs, root_ids)
+	active_can_reach_checkpoint = _graph_can_reach_checkpoint(active_succs, checkpoint_ids)
+
+	success_edges: set[int] = set()
+	for src_id in active_reachable:
+		for conn_key, dst_id in active_succs.get(src_id, []):
+			if dst_id in active_can_reach_checkpoint:
+				success_edges.add(conn_key)
+
+	best_states: dict[int, tuple[CONNECTION_STATE, list[str]]] = {}
+	for conn_key in target_conn_keys:
+		reasons: list[str] = []
+		if conn_key in success_edges:
+			state = CONNECTION_STATE.VALID
+			reasons.append("Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation.")
+		elif conn_key in edge_taken:
+			state = CONNECTION_STATE.CONDITIONAL_INVALID
+			reasons.append("Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation.")
+		elif conn_key in edge_src_reachable:
+			state = CONNECTION_STATE.INVALID
+			if conn_key in edge_condition_failed:
+				reasons.append("Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar.")
+			else:
+				reasons.append("Keine aktivierbare Regel erzeugt einen Übergang über diese Verbindung.")
+		else:
+			state = CONNECTION_STATE.INVALID
+			reasons.append("Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung.")
+		best_states[conn_key] = (state, reasons)
+
+	out_checkpoint_levels: dict[str, list[int]] = {}
+	for checkpoint_id in target_checkpoint_ids:
+		if checkpoint_id in active_reachable:
+			out_checkpoint_levels[checkpoint_id] = [0]
+
+	profiling = {
+		"state_count": len(active_reachable),
+		"transition_count": sum(len(v) for v in active_succs.values()),
+		"collapsed_conditions": 0,
+	}
+	return best_states, out_checkpoint_levels, profiling
 
 
 def _sanitize_symbol(raw: str) -> str:
@@ -342,6 +617,15 @@ def _write_nusmv_file(snapshot: dict) -> str | None:
 
 
 def _find_nusmv_binary() -> str | None:
+	local_candidates = [
+		os.path.join(os.getcwd(), "NuSVm", "bin", "NuSVM"),
+		os.path.join(os.path.dirname(__file__), "..", "..", "NuSVm", "bin", "NuSVM"),
+	]
+	for candidate in local_candidates:
+		abs_candidate = os.path.abspath(candidate)
+		if os.path.isfile(abs_candidate):
+			return abs_candidate
+
 	for name in ("NuSMV", "nusmv", "nuXmv"):
 		found = shutil.which(name)
 		if found:
@@ -450,24 +734,45 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	checkpoint_ids = set(snapshot.get("checkpoint_ids", []))
 	target_checkpoint_ids = set(snapshot.get("target_checkpoint_ids", checkpoint_ids))
 	nusmv_max_workers = snapshot.get("nusmv_max_workers")
-	compile_workers = int(snapshot.get("compile_workers", min(max(1, os.cpu_count() or 1), 4)))
+	compile_workers = max(1, int(snapshot.get("compile_workers", _default_parallel_workers(cap=8))))
 	cache_limit = int(snapshot.get("validation_cache_limit", 250000))
-	state_workers = int(snapshot.get("state_workers", min(max(1, os.cpu_count() or 1), 4)))
-	state_parallel_min_branches = max(2, int(snapshot.get("state_parallel_min_branches", 6)))
+	state_workers = max(1, int(snapshot.get("state_workers", _default_parallel_workers(cap=16))))
+	state_parallel_min_branches = max(
+		2,
+		int(snapshot.get("state_parallel_min_branches", min(4, max(2, state_workers // 2)))),
+	)
 	state_parallel_chunk_size = max(
 		state_parallel_min_branches,
-		int(snapshot.get("state_parallel_chunk_size", 64)),
+		int(snapshot.get("state_parallel_chunk_size", max(16, state_workers * 8))),
 	)
-	effect_parallel_min_rules = max(2, int(snapshot.get("effect_parallel_min_rules", 8)))
+	effect_parallel_min_rules = max(
+		2,
+		int(snapshot.get("effect_parallel_min_rules", min(4, max(2, state_workers // 2)))),
+	)
 	effect_parallel_chunk_size = max(
 		effect_parallel_min_rules,
-		int(snapshot.get("effect_parallel_chunk_size", 64)),
+		int(snapshot.get("effect_parallel_chunk_size", max(16, state_workers * 8))),
+	)
+	queue_backpressure_start = max(1, int(snapshot.get("queue_backpressure_start", max(2000, state_workers * 256))))
+	queue_backpressure_step = max(1, int(snapshot.get("queue_backpressure_step", max(500, state_workers * 64))))
+	queue_backpressure_parallel_scale = max(
+		1,
+		int(snapshot.get("queue_backpressure_parallel_scale", 2)),
 	)
 	# 0 disables state limiting; limits can be provided explicitly via snapshot.
 	max_states = int(snapshot.get("max_states", 0))
 	root_ids = [sid for sid in snapshot.get("root_ids", []) if sid in station_data]
-	max_depth = int(snapshot.get("max_depth", 200))
+	max_depth = int(snapshot.get("max_depth", 2000))
 	apply_all_rules = bool(snapshot.get("apply_all_rule_sets", False))
+	ruleless_mode = all(not station.get("rules", []) for station in station_data.values())
+	relevant_attrs, compare_attrs, attr_thresholds = _collect_condition_attr_metadata(
+		station_data=station_data,
+		flow_conn_conditions=flow_conn_conditions,
+	)
+	_safe_status_emit(
+		status_emit,
+		f"Validierung: SAT-BMC Vorbereitung ({len(station_data)} Stationen, {len(flow_conn_keys)} Verbindungen) ...",
+	)
 
 	if not station_data or not root_ids:
 		duration_ms = round((time.perf_counter() - start_time) * 1000)
@@ -484,6 +789,87 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			},
 		}
 
+	if ruleless_mode:
+		_safe_status_emit(status_emit, "Validierung: statische Graph-Analyse ...")
+		_safe_status_emit(status_emit, "Validierung läuft ... SAT-BMC (statischer Modus) ...")
+		best_states, out_checkpoint_levels, static_profiling = _compute_ruleless_static_validation(
+			station_data=station_data,
+			root_ids=root_ids,
+			flow_succs=flow_succs,
+			flow_conn_conditions=flow_conn_conditions,
+			target_conn_keys=target_conn_keys,
+			checkpoint_ids=checkpoint_ids,
+			target_checkpoint_ids=target_checkpoint_ids,
+		)
+
+		smv_path = _write_nusmv_file(snapshot)
+		nusmv_checkpoint_reachability: dict[str, bool] = {}
+		if smv_path:
+			_safe_status_emit(status_emit, "Validierung: NuSMV-Reichweitencheck ...")
+			nusmv_checkpoint_reachability = _run_nusmv_reachability(
+				smv_path=smv_path,
+				checkpoint_ids=list(target_checkpoint_ids),
+				cancel_event=cancel_event,
+				max_workers=nusmv_max_workers,
+			)
+
+		nusmv_reachable = sum(1 for v in nusmv_checkpoint_reachability.values() if v)
+		duration_ms = round((time.perf_counter() - start_time) * 1000)
+
+		smv_file_metric = smv_path
+		if smv_path and not bool(snapshot.get("keep_smv_file", False)):
+			try:
+				os.remove(smv_path)
+				smv_file_metric = None
+			except OSError:
+				pass
+
+		_safe_status_emit(
+			status_emit,
+			(
+				"Validierung abgeschlossen "
+				f"({static_profiling.get('state_count', 0)} Knoten, "
+				f"{static_profiling.get('transition_count', 0)} Kanten, {duration_ms} ms)."
+			),
+		)
+
+		return {
+			"best_states": best_states,
+			"checkpoint_levels": out_checkpoint_levels,
+			"metrics": {
+				"mode": "nu-smv+static-graph",
+				"total_flow": len(flow_conn_keys),
+				"target_flow": len(target_conn_keys),
+				"total_checkpoints": len(checkpoint_ids),
+				"target_checkpoints": len(target_checkpoint_ids),
+				"duration_ms": duration_ms,
+				"smv_file": smv_file_metric,
+				"nusmv_available": _find_nusmv_binary() is not None,
+				"nusmv_checkpoint_reachable": nusmv_reachable,
+				"graph_checkpoint_reachable": len(out_checkpoint_levels),
+				"profiling": {
+					"state_count": static_profiling.get("state_count", 0),
+					"transition_count": static_profiling.get("transition_count", 0),
+					"state_workers": 1,
+					"state_parallel_min_branches": 0,
+					"state_parallel_chunk_size": 0,
+					"effect_parallel_min_rules": 0,
+					"effect_parallel_chunk_size": 0,
+					"state_limit": max_states,
+					"state_limit_reached": False,
+					"analysis_truncated": False,
+					"collapsed_conditions": static_profiling.get("collapsed_conditions", 0),
+					"future_observable_edges_skipped": 0,
+					"dedup_rule_tasks_skipped": 0,
+					"dedup_branch_payloads_skipped": 0,
+					"dedup_next_candidates_skipped": 0,
+					"state_reuse_hits": 0,
+					"dominance_pruned_states": 0,
+					"local_dominance_pruned_candidates": 0,
+				},
+			},
+		}
+
 	smv_path = _write_nusmv_file(snapshot)
 	nusmv_checkpoint_reachability: dict[str, bool] = {}
 	if smv_path:
@@ -496,10 +882,15 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		)
 
 	can_reach_checkpoint_graph = _graph_can_reach_checkpoint(flow_succs, checkpoint_ids)
+	cyclic_nodes = _graph_nodes_in_cycles(flow_succs)
+	station_component_by_id, _, cyclic_component_ids = _graph_strongly_connected_components(flow_succs)
 	station_idx_to_id = list(station_data.keys())
 	station_id_to_idx = {sid: idx for idx, sid in enumerate(station_idx_to_id)}
+	station_component_ids = [station_component_by_id.get(station_id, -1) for station_id in station_idx_to_id]
+	_safe_status_emit(status_emit, "Validierung: Regeln und Bedingungen werden kompiliert ...")
 
 	rule_limits: list[int] = []
+	tracked_rule_indices: set[int] = set()
 	rule_entries: dict[
 		str,
 		list[
@@ -517,8 +908,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		rules = station.get("rules", [])
 		count = len(rules)
 		station_rule_spans[station_id] = (global_rule_idx, count, rules)
-		for rule in rules:
-			rule_limits.append(max(0, int(rule.get("max_traversals", 20))))
+		for offset, rule in enumerate(rules):
+			limit = max(0, int(rule.get("max_traversals", 20)))
+			rule_limits.append(limit)
+			# Counter dimensions are expensive. Track only where the limit can actually bind:
+			# cycle stations can revisit rules; one-shot limits must be respected everywhere.
+			if station_id in cyclic_nodes or limit <= 1:
+				tracked_rule_indices.add(global_rule_idx + offset)
 		global_rule_idx += count
 
 	def _compile_station_rules(station_item: tuple[str, tuple[int, int, list[dict]]]):
@@ -564,6 +960,62 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	
 	conn_has_conditions = {conn_key: bool(conds) for conn_key, conds in compiled_flow_conn_conditions.items()}
 
+	station_relevant_attrs_by_idx: list[set[str]] = [set() for _ in station_idx_to_id]
+	future_observable_edges_skipped = 0
+
+	def _cond_attrs_from_compiled(conds: tuple[tuple[str | None, str | None, str, float], ...]) -> set[str]:
+		attrs: set[str] = set()
+		for attr_id, compare_attr_id, _, _ in conds:
+			if attr_id is not None:
+				attrs.add(attr_id)
+			if compare_attr_id is not None:
+				attrs.add(compare_attr_id)
+		return attrs
+
+	station_direct_relevant_attrs: list[set[str]] = [set() for _ in station_idx_to_id]
+	for station_id, compiled_rules in rule_entries.items():
+		if station_id not in can_reach_checkpoint_graph:
+			continue
+		station_idx = station_id_to_idx.get(station_id)
+		if station_idx is None:
+			continue
+		direct_attrs = station_direct_relevant_attrs[station_idx]
+		for _, conds, _, _ in compiled_rules:
+			direct_attrs.update(_cond_attrs_from_compiled(conds))
+		for conn_key, dst_id in flow_succs.get(station_id, []):
+			if dst_id not in can_reach_checkpoint_graph:
+				future_observable_edges_skipped += 1
+				continue
+			direct_attrs.update(_cond_attrs_from_compiled(compiled_flow_conn_conditions.get(conn_key, ())))
+
+	reverse_succs: dict[str, list[str]] = {sid: [] for sid in can_reach_checkpoint_graph}
+	for src_id, entries in flow_succs.items():
+		if src_id not in can_reach_checkpoint_graph:
+			continue
+		for _, dst_id in entries:
+			if dst_id not in can_reach_checkpoint_graph:
+				continue
+			reverse_succs.setdefault(dst_id, []).append(src_id)
+
+	station_relevant_attrs_by_id: dict[str, set[str]] = {
+		station_id: set(station_direct_relevant_attrs[station_id_to_idx[station_id]])
+		for station_id in can_reach_checkpoint_graph
+	}
+	changed = True
+	while changed:
+		changed = False
+		for station_id in can_reach_checkpoint_graph:
+			current = station_relevant_attrs_by_id[station_id]
+			for pred_id in reverse_succs.get(station_id, []):
+				pred_attrs = station_relevant_attrs_by_id[pred_id]
+				before = len(pred_attrs)
+				pred_attrs.update(current)
+				if len(pred_attrs) != before:
+					changed = True
+
+	for station_id, station_idx in station_id_to_idx.items():
+		station_relevant_attrs_by_idx[station_idx] = station_relevant_attrs_by_id.get(station_id, set())
+
 	rule_collapse_map: dict[tuple[str, int, int], tuple[int, ...]] = {}
 	rule_collapse_by_station_rule: dict[tuple[str, int], dict[int, tuple[int, ...]]] = {}
 	collapsed_condition_count = 0
@@ -602,6 +1054,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					rule_collapses[conn_key] = collapsed_tuple
 					collapsed_condition_count += len(collapsed_tuple)
 
+	_safe_status_emit(
+		status_emit,
+		f"Validierung: Kompilierung abgeschlossen ({len(rule_limits)} Regeln, {len(compiled_flow_conn_conditions)} Verbindungs-Bedingungssets).",
+	)
+
 	initial_used_counts: tuple[tuple[int, int], ...] = tuple()
 	attrs_pool: dict[tuple[tuple[str, float], ...], int] = {tuple(): 0}
 	attrs_values: list[tuple[tuple[str, float], ...]] = [tuple()]
@@ -631,10 +1088,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		used_counts: dict[int, int],
 		increment_indices: list[int],
 	) -> int:
-		if not increment_indices:
+		tracked_increment_indices = [idx for idx in increment_indices if idx in tracked_rule_indices]
+		if not tracked_increment_indices:
 			return used_counts_id
 		updated = dict(used_counts)
-		for gidx in increment_indices:
+		for gidx in tracked_increment_indices:
 			updated[gidx] = int(updated.get(gidx, 0)) + 1
 		counters_key = tuple(sorted((idx, val) for idx, val in updated.items() if val > 0))
 		return _intern_counters(counters_key)
@@ -663,10 +1121,14 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		return eligible
 
 	queue = deque()
+	component_queues: dict[int, deque[int]] = {}
+	active_component_ids = deque()
+	active_component_set: set[int] = set()
 	state_station_idx: list[int] = []
 	state_attrs_id: list[int] = []
 	state_counters_id: list[int] = []
 	key_to_state_id: dict[tuple[int, int, int], int] = {}
+	dominance_frontier: dict[tuple[int, int], list[int]] = {}
 	predecessor_states: dict[int, int | tuple[int, ...] | list[int]] = {}
 	incoming_target_edges: dict[int, int | tuple[int, ...] | set[int]] = {}
 	transition_count = 0
@@ -681,9 +1143,88 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	conn_condition_cache: dict[tuple[int, int, int], bool] = {}
 	counters_dict_cache: dict[int, dict[int, int]] = {}
 	state_limit_reached = False
+	pending_state_count = 0
+	queue_peak = 0
+	queue_enqueued_total = 0
+	queue_dequeued_total = 0
+	queue_window_enqueued = 0
+	queue_window_dequeued = 0
+	queue_last_window_enqueued = 0
+	queue_last_window_dequeued = 0
 	empty_collapse_map: dict[int, tuple[int, ...]] = {}
+	dedup_rule_tasks_skipped = 0
+	dedup_branch_payloads_skipped = 0
+	dedup_next_candidates_skipped = 0
+	state_reuse_hits = 0
+	dominance_pruned_states = 0
+	local_dominance_pruned_candidates = 0
 	
 	# Early termination tracking removed - can cause incomplete results
+
+	def _enqueue_state(state_id: int, station_idx: int):
+		nonlocal pending_state_count, queue_peak, queue_enqueued_total, queue_window_enqueued
+		component_id = station_component_ids[station_idx]
+		if component_id in cyclic_component_ids:
+			component_queue = component_queues.get(component_id)
+			if component_queue is None:
+				component_queue = deque()
+				component_queues[component_id] = component_queue
+			was_empty = not component_queue
+			component_queue.append(state_id)
+			if was_empty and component_id not in active_component_set:
+				active_component_set.add(component_id)
+				active_component_ids.append(component_id)
+		else:
+			queue.append(state_id)
+		pending_state_count += 1
+		queue_enqueued_total += 1
+		queue_window_enqueued += 1
+		if pending_state_count > queue_peak:
+			queue_peak = pending_state_count
+
+	def _pop_next_state() -> int | None:
+		nonlocal pending_state_count, queue_dequeued_total, queue_window_dequeued
+		while active_component_ids:
+			component_id = active_component_ids[0]
+			component_queue = component_queues.get(component_id)
+			if component_queue:
+				state_id = component_queue.pop()
+				pending_state_count -= 1
+				queue_dequeued_total += 1
+				queue_window_dequeued += 1
+				if not component_queue:
+					active_component_ids.popleft()
+					active_component_set.discard(component_id)
+				return state_id
+			active_component_ids.popleft()
+			active_component_set.discard(component_id)
+		if queue:
+			pending_state_count -= 1
+			queue_dequeued_total += 1
+			queue_window_dequeued += 1
+			return queue.pop()
+		return None
+
+	def _counters_leq(left_id: int, right_id: int) -> bool:
+		"""Return true iff counters(left) <= counters(right) component-wise."""
+		left = counters_dict_cache.get(left_id)
+		if left is None:
+			if cache_limit > 0 and len(counters_dict_cache) > cache_limit:
+				counters_dict_cache.clear()
+			left = {idx: val for idx, val in counters_values[left_id]}
+			counters_dict_cache[left_id] = left
+
+		right = counters_dict_cache.get(right_id)
+		if right is None:
+			if cache_limit > 0 and len(counters_dict_cache) > cache_limit:
+				counters_dict_cache.clear()
+			right = {idx: val for idx, val in counters_values[right_id]}
+			counters_dict_cache[right_id] = right
+
+		for idx, left_val in left.items():
+			if left_val > int(right.get(idx, 0)):
+				return False
+		return True
 
 	def _append_predecessor(state_id: int, pred_state_id: int):
 		existing = predecessor_states.get(state_id)
@@ -736,7 +1277,6 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 
 	def _expand_branch(
 		post_attrs: dict[str, float],
-		post_attrs_id: int,
 		post_counters_id: int,
 		rule_global_idx: int | None,
 		rule_collapsed_by_conn: dict[int, tuple[int, ...]],
@@ -758,32 +1298,46 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			rule_cache_key = -1 if rule_global_idx is None else int(rule_global_idx)
 			conn_conds_ok = None
 			if state_workers <= 1:
-				cond_cache_key = (conn_key, post_attrs_id, rule_cache_key)
+				cond_cache_key = (conn_key, id(post_attrs), rule_cache_key)
 				conn_conds_ok = conn_condition_cache.get(cond_cache_key)
 				if conn_conds_ok is None:
 					if cache_limit > 0 and len(conn_condition_cache) > cache_limit:
 						conn_condition_cache.clear()
-					if collapsed_indices:
+					if not conds:
+						conn_conds_ok = True
+					elif not collapsed_indices:
+						if len(conds) == 1:
+							conn_conds_ok = _check_condition_compiled(conds[0], post_attrs)
+						else:
+							conn_conds_ok = all(_check_condition_compiled(cond, post_attrs) for cond in conds)
+					elif len(collapsed_indices) >= len(conds):
+						conn_conds_ok = True
+					else:
 						collapsed_lookup = set(collapsed_indices)
 						conn_conds_ok = all(
 							_check_condition_compiled(cond, post_attrs)
 							for idx, cond in enumerate(conds)
 							if idx not in collapsed_lookup
 						)
-					else:
-						conn_conds_ok = all(_check_condition_compiled(cond, post_attrs) for cond in conds)
 					conn_condition_cache[cond_cache_key] = conn_conds_ok
 			else:
 				# Threaded path: lock-free, no shared cache
-				if collapsed_indices:
+				if not conds:
+					conn_conds_ok = True
+				elif not collapsed_indices:
+					if len(conds) == 1:
+						conn_conds_ok = _check_condition_compiled(conds[0], post_attrs)
+					else:
+						conn_conds_ok = all(_check_condition_compiled(cond, post_attrs) for cond in conds)
+				elif len(collapsed_indices) >= len(conds):
+					conn_conds_ok = True
+				else:
 					collapsed_lookup = set(collapsed_indices)
 					conn_conds_ok = all(
 						_check_condition_compiled(cond, post_attrs)
 						for idx, cond in enumerate(conds)
 						if idx not in collapsed_lookup
 					)
-				else:
-					conn_conds_ok = all(_check_condition_compiled(cond, post_attrs) for cond in conds)
 
 			if not conn_conds_ok:
 				if conn_key in target_conn_keys:
@@ -796,18 +1350,38 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			if dst_id not in can_reach_checkpoint_graph:
 				continue
 
-			next_candidates.append((conn_key, dst_id, post_attrs_id, post_counters_id))
+			next_candidates.append((conn_key, dst_id, post_attrs, post_counters_id))
 
 		return branch_src_reachable, branch_taken, branch_condition_failed, next_candidates
 
 	def _register_state(station_idx: int, attrs_id: int, counters_id: int, depth: int) -> int:
-		nonlocal state_limit_reached
+		nonlocal state_limit_reached, state_reuse_hits, dominance_pruned_states
+		if depth > max_depth:
+			return -1
 		state_key = (station_idx, attrs_id, counters_id)
 		sid = key_to_state_id.get(state_key)
 		if sid is not None:
+			state_reuse_hits += 1
 			if depth < state_depth[sid]:
 				state_depth[sid] = depth
 			return sid
+
+		# A state with the same station and attribute snapshot but higher used-rule
+		# counters is always weaker: it can only have fewer remaining traversals.
+		frontier_key = (station_idx, attrs_id)
+		frontier = dominance_frontier.get(frontier_key, [])
+		for existing_counters_id in frontier:
+			if _counters_leq(existing_counters_id, counters_id):
+				dominance_pruned_states += 1
+				return -1
+
+		if frontier:
+			next_frontier = [cid for cid in frontier if not _counters_leq(counters_id, cid)]
+			next_frontier.append(counters_id)
+			dominance_frontier[frontier_key] = next_frontier
+		else:
+			dominance_frontier[frontier_key] = [counters_id]
+
 		if max_states > 0 and len(key_to_state_id) >= max_states:
 			state_limit_reached = True
 			return -1
@@ -817,7 +1391,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		state_attrs_id.append(attrs_id)
 		state_counters_id.append(counters_id)
 		state_depth.append(depth)
-		queue.append(sid)
+		_enqueue_state(sid, station_idx)
 		return sid
 
 	for root_id in root_ids:
@@ -826,15 +1400,47 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	_safe_status_emit(status_emit, "Validierung: Zustandsraum wird analysiert ...")
 	cancelled = False
 	state_pool = ThreadPoolExecutor(max_workers=max(1, state_workers)) if state_workers > 1 else None
+	progress_every_states = max(1000, int(snapshot.get("progress_every_states", 5000)))
+	progress_last_emit_count = 0
+	progress_last_emit_time = start_time
 
 	try:
-		while queue:
+		while True:
+			src_state_id = _pop_next_state()
+			if src_state_id is None:
+				break
 			if _is_cancelled(cancel_event):
 				cancelled = True
 				break
 			if state_limit_reached:
 				_safe_status_emit(status_emit, "Validierung: Zustandslimit erreicht, Teilergebnis wird erstellt ...")
 				break
+
+			processed_states = len(state_depth) - pending_state_count
+			now = time.perf_counter()
+			if (
+				processed_states - progress_last_emit_count >= progress_every_states
+				or (now - progress_last_emit_time >= 1.5 and processed_states > progress_last_emit_count)
+			):
+				queue_window_net = queue_window_enqueued - queue_window_dequeued
+				queue_last_window_enqueued = queue_window_enqueued
+				queue_last_window_dequeued = queue_window_dequeued
+				queue_window_enqueued = 0
+				queue_window_dequeued = 0
+				progress_last_emit_count = processed_states
+				progress_last_emit_time = now
+				_safe_status_emit(
+					status_emit,
+					(
+						"Validierung läuft ... SAT-BMC "
+						f"(Zustände verarbeitet: {processed_states}, "
+						f"Queue: {pending_state_count}, "
+						f"QueuePeak: {queue_peak}, "
+						f"QueueΔFenster: {queue_window_net} "
+						f"(in: {queue_last_window_enqueued}, out: {queue_last_window_dequeued}), "
+						f"Übergänge: {transition_count})"
+					),
+				)
 			
 			# Automatic cache management: periodically clear based on memory pressure
 			queue_progress = len(state_depth)
@@ -846,7 +1452,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				if cache_limit > 0 and len(eligible_rules_cache) > cache_limit * 0.8:
 					eligible_rules_cache.clear()
 
-			src_state_id = queue.popleft()
+			# Depth-first traversal keeps the live frontier much smaller than BFS.
 			depth = state_depth[src_state_id]
 			if depth > max_depth:
 				continue
@@ -877,11 +1483,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					checkpoint_levels[station_id].add(0)
 
 			eligible = _get_eligible_rules(station_id, attrs_key, attrs)
-			enabled = [
-				(gidx, effects)
-				for gidx, effects in eligible
-				if used_counts.get(gidx, 0) < rule_limits[gidx]
-			]
+			enabled = []
+			for gidx, effects in eligible:
+				if gidx in tracked_rule_indices and used_counts.get(gidx, 0) >= rule_limits[gidx]:
+					continue
+				enabled.append((gidx, effects))
 			if not enabled and not rule_entries.get(station_id):
 				enabled = [(None, [])]
 
@@ -890,6 +1496,15 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				continue
 
 			branch_effects = []
+			queue_pressure_level = 0
+			if pending_state_count > queue_backpressure_start:
+				queue_pressure_level = (pending_state_count - queue_backpressure_start) // queue_backpressure_step + 1
+			dynamic_effect_parallel_min_rules = effect_parallel_min_rules + (
+				queue_pressure_level * queue_backpressure_parallel_scale
+			)
+			dynamic_state_parallel_min_branches = state_parallel_min_branches + (
+				queue_pressure_level * queue_backpressure_parallel_scale
+			)
 			if enabled:
 				if apply_all_rules:
 					effects: list[tuple[str | None, str, float]] = []
@@ -902,6 +1517,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					branch_effects.append((_apply_effects_compiled(attrs, effects), new_counters_id, None, {}))
 				else:
 					rule_tasks: list[tuple[list[tuple[str | None, str, float]], int, int | None, dict[int, tuple[int, ...]]]] = []
+					seen_rule_task_keys: set[tuple[tuple[tuple[str | None, str, float], ...], int, tuple[tuple[int, tuple[int, ...]], ...]]] = set()
 					for gidx, compiled_effects in enabled:
 						new_counters_id = _increment_used_counts(counters_id, used_counts, [gidx] if gidx is not None else [])
 						rule_collapsed_by_conn = (
@@ -909,9 +1525,18 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 							if gidx is not None
 							else empty_collapse_map
 						)
+						rule_task_key = (
+							tuple(compiled_effects),
+							new_counters_id,
+							tuple(sorted((conn_key, idxs) for conn_key, idxs in rule_collapsed_by_conn.items())),
+						)
+						if rule_task_key in seen_rule_task_keys:
+							dedup_rule_tasks_skipped += 1
+							continue
+						seen_rule_task_keys.add(rule_task_key)
 						rule_tasks.append((compiled_effects, new_counters_id, gidx, rule_collapsed_by_conn))
 
-					if state_pool is not None and len(rule_tasks) >= effect_parallel_min_rules:
+					if state_pool is not None and len(rule_tasks) >= dynamic_effect_parallel_min_rules:
 						for chunk_start in range(0, len(rule_tasks), effect_parallel_chunk_size):
 							chunk = rule_tasks[chunk_start : chunk_start + effect_parallel_chunk_size]
 							future_to_meta = {
@@ -941,26 +1566,94 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				break
 
 			branch_payloads = []
+			seen_branch_payloads: dict[tuple[int, int], int] = {}
 			post_attrs_obj_cache: dict[int, int] = {}
+			station_payload_relevant_attrs = station_relevant_attrs_by_idx[station_idx]
 			for post_attrs, post_counters_id, rule_global_idx, rule_collapsed_by_conn in branch_effects:
 				obj_id = id(post_attrs)
 				post_attrs_id = post_attrs_obj_cache.get(obj_id)
 				if post_attrs_id is None:
-					post_attrs_id = _intern_attrs(_canonical_attrs(post_attrs))
+					post_attrs_id = _intern_attrs(
+						_canonical_attrs_condition_aware(
+							post_attrs,
+							station_payload_relevant_attrs,
+							compare_attrs,
+							attr_thresholds,
+						)
+					)
 					post_attrs_obj_cache[obj_id] = post_attrs_id
+				payload_key = (post_attrs_id, post_counters_id)
+				existing_idx = seen_branch_payloads.get(payload_key)
+				if existing_idx is not None:
+					dedup_branch_payloads_skipped += 1
+					existing = branch_payloads[existing_idx]
+					existing_rule_idx = existing[3]
+					existing_collapses = existing[4]
+					if existing_rule_idx != rule_global_idx or existing_collapses != rule_collapsed_by_conn:
+						# Merge equivalent payloads conservatively: disable collapse shortcuts.
+						branch_payloads[existing_idx] = (
+							existing[0],
+							existing[1],
+							existing[2],
+							None,
+							empty_collapse_map,
+						)
+					continue
+				seen_branch_payloads[payload_key] = len(branch_payloads)
 				branch_payloads.append((post_attrs, post_attrs_id, post_counters_id, rule_global_idx, rule_collapsed_by_conn))
 
+			dst_attrs_id_cache: dict[tuple[int, int], int] = {}
+			expansion_seen_states: set[tuple[int, int, int]] = set()
+			expansion_local_frontier: dict[tuple[int, int], list[int]] = {}
+
 			def _consume_branch_result(branch_result) -> bool:
-				nonlocal transition_count
+				nonlocal transition_count, dedup_next_candidates_skipped, local_dominance_pruned_candidates
 				branch_src_reachable, branch_taken, branch_condition_failed, next_candidates = branch_result
 				edge_src_reachable.update(branch_src_reachable)
 				edge_taken.update(branch_taken)
 				edge_condition_failed.update(branch_condition_failed)
 
-				for conn_key, dst_id, post_attrs_id, post_counters_id in next_candidates:
-					dst_state_id = _register_state(station_id_to_idx[dst_id], post_attrs_id, post_counters_id, depth + 1)
+				seen_next_candidates: set[tuple[int, int, int, int]] = set()
+				for conn_key, dst_id, post_attrs, post_counters_id in next_candidates:
+					dst_station_idx = station_id_to_idx[dst_id]
+					dst_cache_key = (id(post_attrs), dst_station_idx)
+					dst_attrs_id = dst_attrs_id_cache.get(dst_cache_key)
+					if dst_attrs_id is None:
+						dst_attrs_id = _intern_attrs(
+							_canonical_attrs_condition_aware(
+								post_attrs,
+								station_relevant_attrs_by_idx[dst_station_idx],
+								compare_attrs,
+								attr_thresholds,
+							)
+						)
+						dst_attrs_id_cache[dst_cache_key] = dst_attrs_id
+					next_key = (conn_key, dst_station_idx, dst_attrs_id, post_counters_id)
+					if next_key in seen_next_candidates:
+						dedup_next_candidates_skipped += 1
+						continue
+					seen_next_candidates.add(next_key)
+					local_frontier_key = (dst_station_idx, dst_attrs_id)
+					local_frontier = expansion_local_frontier.get(local_frontier_key, [])
+					if any(_counters_leq(existing_counters_id, post_counters_id) for existing_counters_id in local_frontier):
+						local_dominance_pruned_candidates += 1
+						continue
+					if local_frontier:
+						expansion_local_frontier[local_frontier_key] = [
+							existing_counters_id
+							for existing_counters_id in local_frontier
+							if not _counters_leq(post_counters_id, existing_counters_id)
+						] + [post_counters_id]
+					else:
+						expansion_local_frontier[local_frontier_key] = [post_counters_id]
+					state_frontier_key = (dst_station_idx, dst_attrs_id, post_counters_id)
+					if state_frontier_key in expansion_seen_states:
+						dedup_next_candidates_skipped += 1
+						continue
+					expansion_seen_states.add(state_frontier_key)
+					dst_state_id = _register_state(dst_station_idx, dst_attrs_id, post_counters_id, depth + 1)
 					if dst_state_id < 0:
-						break
+						continue
 					_append_predecessor(dst_state_id, src_state_id)
 					if conn_key in target_conn_keys:
 						_append_target_edge(dst_state_id, conn_key)
@@ -968,14 +1661,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 
 				return state_limit_reached
 
-			if state_pool is not None and len(branch_payloads) >= state_parallel_min_branches:
+			if state_pool is not None and len(branch_payloads) >= dynamic_state_parallel_min_branches:
 				for chunk_start in range(0, len(branch_payloads), state_parallel_chunk_size):
 					chunk = branch_payloads[chunk_start : chunk_start + state_parallel_chunk_size]
 					futures = [
 						state_pool.submit(
 							_expand_branch,
 							post_attrs,
-							post_attrs_id,
 							post_counters_id,
 							rule_global_idx,
 							rule_collapsed_by_conn,
@@ -1001,7 +1693,6 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				for post_attrs, post_attrs_id, post_counters_id, rule_global_idx, rule_collapsed_by_conn in branch_payloads:
 					branch_result = _expand_branch(
 						post_attrs,
-						post_attrs_id,
 						post_counters_id,
 						rule_global_idx,
 						rule_collapsed_by_conn,
@@ -1019,8 +1710,14 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	if cancelled:
 		return {"cancelled": True}
 
+	_safe_status_emit(status_emit, "Validierung: Rückwärtsanalyse und Klassifizierung ...")
+
 	analysis_truncated = state_limit_reached
 	state_count_metric = len(state_depth)
+	if queue_window_enqueued or queue_window_dequeued:
+		queue_last_window_enqueued = queue_window_enqueued
+		queue_last_window_dequeued = queue_window_dequeued
+	queue_last_window_net = queue_last_window_enqueued - queue_last_window_dequeued
 
 	success_edges: set[int] = set()
 	if successful_state_ids:
@@ -1037,11 +1734,16 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 
 	# Drop large temporary state-space structures before final classification.
 	queue.clear()
+	component_queues.clear()
+	active_component_ids.clear()
+	active_component_set.clear()
 	state_station_idx.clear()
 	state_attrs_id.clear()
 	state_counters_id.clear()
 	state_depth.clear()
+	pending_state_count = 0
 	key_to_state_id.clear()
+	dominance_frontier.clear()
 	predecessor_states.clear()
 	incoming_target_edges.clear()
 	successful_state_ids.clear()
@@ -1108,6 +1810,15 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		except OSError:
 			pass
 
+	_safe_status_emit(
+		status_emit,
+		(
+			"Validierung abgeschlossen "
+			f"({state_count_metric} Zustände, {transition_count} Übergänge, "
+			f"QueuePeak: {queue_peak}, QueueNetto: {queue_enqueued_total - queue_dequeued_total}, {duration_ms} ms)."
+		),
+	)
+
 	return {
 		"best_states": best_states,
 		"checkpoint_levels": out_checkpoint_levels,
@@ -1125,6 +1836,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			"profiling": {
 				"state_count": state_count_metric,
 				"transition_count": transition_count,
+				"queue_peak": queue_peak,
+				"queue_enqueued_total": queue_enqueued_total,
+				"queue_dequeued_total": queue_dequeued_total,
+				"queue_net_total": queue_enqueued_total - queue_dequeued_total,
+				"queue_window_enqueued": queue_last_window_enqueued,
+				"queue_window_dequeued": queue_last_window_dequeued,
+				"queue_window_net": queue_last_window_net,
 				"state_workers": max(1, state_workers),
 				"state_parallel_min_branches": state_parallel_min_branches,
 				"state_parallel_chunk_size": state_parallel_chunk_size,
@@ -1134,6 +1852,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				"state_limit_reached": state_limit_reached,
 				"analysis_truncated": analysis_truncated,
 				"collapsed_conditions": collapsed_condition_count,
+				"future_observable_edges_skipped": future_observable_edges_skipped,
+				"dedup_rule_tasks_skipped": dedup_rule_tasks_skipped,
+				"dedup_branch_payloads_skipped": dedup_branch_payloads_skipped,
+				"dedup_next_candidates_skipped": dedup_next_candidates_skipped,
+				"state_reuse_hits": state_reuse_hits,
+				"dominance_pruned_states": dominance_pruned_states,
+					"local_dominance_pruned_candidates": local_dominance_pruned_candidates,
 			},
 		},
 	}

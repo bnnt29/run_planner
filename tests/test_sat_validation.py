@@ -32,6 +32,8 @@ from run_planner.sat_validation import (
     _apply_effects,
     _graph_reverse,
     _graph_can_reach_checkpoint,
+    _graph_strongly_connected_components,
+    _graph_nodes_in_cycles,
     _sanitize_symbol,
     _build_nusmv_model,
     _write_nusmv_file,
@@ -454,6 +456,38 @@ class TestInternalHelperCoverage:
         assert set(reversed_graph["c"]) == {"b", "d"}
         assert reachable == {"a", "b", "c", "d"}
 
+    def test_graph_nodes_in_cycles_detects_scc_and_self_loop(self):
+        """Cycle detection should include SCC members and explicit self-loops only."""
+        flow_succs = {
+            "a": [(1, "b")],
+            "b": [(2, "c")],
+            "c": [(3, "a")],  # SCC a-b-c
+            "d": [(4, "d")],  # self loop
+            "e": [(5, "f")],  # acyclic chain
+        }
+
+        cycles = _graph_nodes_in_cycles(flow_succs)
+
+        assert {"a", "b", "c", "d"}.issubset(cycles)
+        assert "e" not in cycles
+        assert "f" not in cycles
+
+    def test_graph_strongly_connected_components_returns_component_ids(self):
+        """SCC analysis should group cyclic nodes and keep acyclic nodes separate."""
+        flow_succs = {
+            "a": [(1, "b")],
+            "b": [(2, "a")],
+            "c": [(3, "d")],
+            "d": [],
+        }
+
+        component_by_node, components, cyclic_component_ids = _graph_strongly_connected_components(flow_succs)
+
+        assert component_by_node["a"] == component_by_node["b"]
+        assert component_by_node["c"] != component_by_node["d"]
+        assert any(set(components[cid]) == {"a", "b"} for cid in cyclic_component_ids)
+        assert all("c" not in components[cid] for cid in cyclic_component_ids)
+
     def test_sanitize_symbol_and_nusmv_model(self):
         """Sanitizing symbols and building the NuSMV model should cover the model text path"""
         assert _sanitize_symbol("hello world!") == "hello_world"
@@ -489,6 +523,17 @@ class TestInternalHelperCoverage:
         assert os.path.exists(path)
         assert _find_nusmv_binary() is None or isinstance(_find_nusmv_binary(), str)
         os.remove(path)
+
+    def test_find_nusmv_binary_prefers_local_repo_path(self):
+        """The repository-local ./NuSVm/bin/NuSVM should be preferred over PATH binaries."""
+        local_path = "/repo/NuSVm/bin/NuSVM"
+        with patch("run_planner.sat_validation.os.getcwd", return_value="/repo"):
+            with patch("run_planner.sat_validation.os.path.dirname", return_value="/repo/src/run_planner"):
+                with patch("run_planner.sat_validation.os.path.abspath", side_effect=lambda value: value):
+                    with patch("run_planner.sat_validation.os.path.isfile", side_effect=lambda value: value == local_path):
+                        with patch("run_planner.sat_validation.shutil.which", return_value="/usr/bin/nusmv"):
+                            found = _find_nusmv_binary()
+        assert found == local_path
 
     def test_run_single_nusmv_reachability_true_and_false_outputs(self):
         """The single-check helper should parse true/false outputs correctly"""
@@ -639,6 +684,61 @@ class TestCoreValidationLogic:
         assert state == CONNECTION_STATE.VALID
         assert isinstance(reasons, list)
         assert len(reasons) > 0
+
+    def test_ruleless_static_graph_mode_handles_large_chain(self):
+        """Ruleless graphs should use the static fast path and still classify paths correctly."""
+        n = 120
+        station_data = {f"s{i}": {"rules": []} for i in range(n)}
+        flow_conn_keys = list(range(n - 1))
+        flow_succs = {f"s{i}": [(i, f"s{i + 1}")] for i in range(n - 1)}
+
+        snapshot = {
+            "station_data": station_data,
+            "root_ids": ["s0"],
+            "flow_conn_keys": flow_conn_keys,
+            "target_conn_keys": flow_conn_keys,
+            "checkpoint_ids": [f"s{n - 1}"],
+            "target_checkpoint_ids": [f"s{n - 1}"],
+            "flow_succs": flow_succs,
+            "flow_conn_conditions": {},
+            "connection_kinds": {k: "FLOW" for k in flow_conn_keys},
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["metrics"]["mode"] == "nu-smv+static-graph"
+        assert all(result["best_states"][k][0] == CONNECTION_STATE.VALID for k in flow_conn_keys)
+        assert result["checkpoint_levels"][f"s{n - 1}"] == [0]
+
+    def test_ruleless_static_graph_respects_unsatisfied_conditions(self):
+        """Ruleless static path must mark condition-failed edges as INVALID."""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [101],
+            "target_conn_keys": [101],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(101, "end")]},
+            "flow_conn_conditions": {
+                101: [
+                    {
+                        "attr_id": "missing_attr",
+                        "op": CONDITION_OP.EXISTS.value,
+                    }
+                ]
+            },
+            "connection_kinds": {101: "FLOW"},
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["metrics"]["mode"] == "nu-smv+static-graph"
+        assert result["best_states"][101][0] == CONNECTION_STATE.INVALID
+        assert any("bedingungen" in reason.lower() for reason in result["best_states"][101][1])
 
     def test_connection_with_conditions(self):
         """Connection with unsatisfiable conditions should be INVALID or CONDITIONAL_INVALID"""
@@ -1124,6 +1224,356 @@ class TestEdgeCasesAndErrorHandling:
         state, reasons = result["best_states"][20]
         assert state == CONNECTION_STATE.UNKNOWN
         assert any("zustandslimit" in reason.lower() for reason in reasons)
+
+    def test_max_traversals_zero_blocks_rule_in_cycle(self):
+        """Rules with max_traversals=0 must be disabled even on cyclic stations."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "gate", "action": "=", "value": 1},
+                            ],
+                            "max_traversals": 0,
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [200, 201],
+            "target_conn_keys": [200, 201],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(200, "start"), (201, "end")],
+            },
+            "flow_conn_conditions": {
+                200: [{"attr_id": "gate", "op": CONDITION_OP.EXISTS.value}],
+                201: [{"attr_id": "gate", "op": CONDITION_OP.EXISTS.value}],
+            },
+            "connection_kinds": {200: "FLOW", 201: "FLOW"},
+            "max_depth": 15,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][200][0] == CONNECTION_STATE.INVALID
+        assert result["best_states"][201][0] == CONNECTION_STATE.INVALID
+        assert result["best_states"][201][1]
+
+    def test_dominance_prunes_weaker_join_state(self):
+        """A weaker duplicate state at a join node should be pruned even if the join is acyclic."""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "loop": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [],
+                        }
+                    ]
+                },
+                "join": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [210, 211, 212],
+            "target_conn_keys": [210, 211, 212],
+            "checkpoint_ids": ["join", "end"],
+            "target_checkpoint_ids": ["join", "end"],
+            "flow_succs": {
+                "start": [(210, "join"), (211, "loop")],
+                "loop": [(212, "join")],
+            },
+            "flow_conn_conditions": {
+                210: [],
+                211: [],
+                212: [],
+            },
+            "connection_kinds": {210: "FLOW", 211: "FLOW", 212: "FLOW"},
+            "max_depth": 10,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        profiling = result["metrics"]["profiling"]
+        assert profiling["state_count"] == 3
+        assert profiling["queue_peak"] <= 3
+        assert result["best_states"][210][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][211][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][212][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+
+    def test_irrelevant_global_attribute_does_not_expand_loop_branch(self):
+        """A globally relevant attribute should still be dropped when no reachable successor can observe it."""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "loop": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "noise", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "join": {"rules": []},
+                "sensor": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "noise", "op": CONDITION_OP.GREATER.value, "value": 0},
+                            ],
+                            "effects": [],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [220, 221, 222, 223],
+            "target_conn_keys": [220, 221, 222, 223],
+            "checkpoint_ids": ["join", "end"],
+            "target_checkpoint_ids": ["join", "end"],
+            "flow_succs": {
+                "start": [(220, "loop")],
+                "loop": [(221, "loop"), (222, "join")],
+                "join": [(223, "end")],
+            },
+            "flow_conn_conditions": {
+                220: [],
+                221: [],
+                222: [],
+                223: [],
+            },
+            "connection_kinds": {220: "FLOW", 221: "FLOW", 222: "FLOW", 223: "FLOW"},
+            "max_depth": 12,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        profiling = result["metrics"]["profiling"]
+        assert profiling["state_count"] <= 4
+        assert profiling["queue_peak"] <= 3
+        assert profiling["dedup_rule_tasks_skipped"] >= 0
+        assert profiling["dedup_branch_payloads_skipped"] >= 0
+        assert profiling["dedup_next_candidates_skipped"] >= 0
+        assert profiling["state_reuse_hits"] >= 0
+        assert profiling["dominance_pruned_states"] >= 0
+        assert result["best_states"][220][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][221][0] == CONNECTION_STATE.CONDITIONAL_INVALID
+        assert result["best_states"][222][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][223][0] == CONNECTION_STATE.VALID
+
+    def test_dead_end_observable_edges_do_not_inflate_relevance(self):
+        """Conditions on dead-end successors should not keep attributes relevant for live paths."""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "loop": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "noise", "action": "+", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "dead": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "noise", "op": CONDITION_OP.GREATER.value, "value": 0},
+                            ],
+                            "effects": [],
+                        }
+                    ]
+                },
+                "join": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [230, 231, 232, 233, 234],
+            "target_conn_keys": [230, 231, 232, 233, 234],
+            "checkpoint_ids": ["join", "end"],
+            "target_checkpoint_ids": ["join", "end"],
+            "flow_succs": {
+                "start": [(230, "loop")],
+                "loop": [(231, "loop"), (232, "join"), (233, "dead")],
+                "join": [(234, "end")],
+            },
+            "flow_conn_conditions": {
+                230: [],
+                231: [],
+                232: [],
+                233: [],
+                234: [],
+            },
+            "connection_kinds": {230: "FLOW", 231: "FLOW", 232: "FLOW", 233: "FLOW", 234: "FLOW"},
+            "max_depth": 12,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        profiling = result["metrics"]["profiling"]
+        assert profiling["future_observable_edges_skipped"] >= 1
+        assert profiling["state_count"] <= 4
+        assert result["best_states"][230][0] == CONNECTION_STATE.VALID
+        assert result["best_states"][231][0] == CONNECTION_STATE.CONDITIONAL_INVALID
+        assert result["best_states"][232][0] == CONNECTION_STATE.VALID
+
+    def test_max_traversals_zero_blocks_rule_non_cyclic(self):
+        """Rules with max_traversals=0 must also be disabled on acyclic stations."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "x", "action": "=", "value": 1},
+                            ],
+                            "max_traversals": 0,
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [202],
+            "target_conn_keys": [202],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(202, "end")]},
+            "flow_conn_conditions": {
+                202: [{"attr_id": "x", "op": CONDITION_OP.EXISTS.value}],
+            },
+            "connection_kinds": {202: "FLOW"},
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][202][0] == CONNECTION_STATE.INVALID
+        assert result["best_states"][202][1]
+
+    def test_unfulfillable_rule_condition_blocks_transition(self):
+        """A rule whose condition cannot be satisfied must not create a transition."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "x", "op": CONDITION_OP.GREATER.value, "value": 0},
+                            ],
+                            "effects": [],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [203],
+            "target_conn_keys": [203],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(203, "end")]},
+            "flow_conn_conditions": {203: []},
+            "connection_kinds": {203: "FLOW"},
+            "max_depth": 4,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][203][0] == CONNECTION_STATE.INVALID
+        assert result["best_states"][203][1]
+
+    def test_max_traversals_one_still_allows_unrelated_end_path(self):
+        """A loop rule limited to one traversal must not block a separate end edge."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "gate", "action": "=", "value": 1},
+                            ],
+                            "max_traversals": 1,
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [204, 205],
+            "target_conn_keys": [204, 205],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(204, "start"), (205, "end")],
+            },
+            "flow_conn_conditions": {
+                204: [{"attr_id": "gate", "op": CONDITION_OP.EXISTS.value}],
+                205: [{"attr_id": "gate", "op": CONDITION_OP.EXISTS.value}],
+            },
+            "connection_kinds": {204: "FLOW", 205: "FLOW"},
+            "max_depth": 6,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["best_states"][204][0] == CONNECTION_STATE.CONDITIONAL_INVALID
+        assert result["best_states"][205][0] == CONNECTION_STATE.CONDITIONAL_VALID
+        assert result["metrics"]["profiling"]["state_count"] <= 3
+
+    def test_max_traversals_applies_to_second_rule_index_in_cycle(self):
+        """Regression: in cyclic stations every rule index must be tracked, not only the first one."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [{"attr_id": "noise", "action": "+", "value": 1}],
+                            "max_traversals": 5,
+                        },
+                        {
+                            "conditions": [],
+                            "effects": [{"attr_id": "gate", "action": "=", "value": 1}],
+                            "max_traversals": 0,
+                        },
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [210, 211],
+            "target_conn_keys": [210, 211],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(210, "start"), (211, "end")],
+            },
+            "flow_conn_conditions": {
+                210: [],
+                211: [{"attr_id": "gate", "op": CONDITION_OP.EXISTS.value}],
+            },
+            "connection_kinds": {210: "FLOW", 211: "FLOW"},
+            "max_depth": 20,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        # If the second rule were untracked, gate would be set and edge 211 could become valid.
+        assert result["best_states"][211][0] == CONNECTION_STATE.INVALID
+        assert result["best_states"][211][1]
 
     def test_disconnected_source_is_conditional_invalid(self):
         """A reachable edge that never reaches a checkpoint should be CONDITIONAL_INVALID"""

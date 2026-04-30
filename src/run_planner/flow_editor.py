@@ -6,6 +6,7 @@ Entry point for the split modules.
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
 
@@ -18,6 +19,25 @@ try:
     from run_planner.ui import MainWindow
 except ImportError:
     from ui import MainWindow
+
+
+def _sanitize_snap_qt_env() -> None:
+    """Avoid mixing Snap GTK/GIO runtime paths with system Python + PyQt."""
+    if not any(name.endswith("_VSCODE_SNAP_ORIG") for name in os.environ):
+        return
+
+    for key in (
+        "GTK_PATH",
+        "GTK_EXE_PREFIX",
+        "GIO_MODULE_DIR",
+        "GSETTINGS_SCHEMA_DIR",
+        "LOCPATH",
+        "GTK_IM_MODULE_FILE",
+    ):
+        os.environ.pop(key, None)
+
+
+_sanitize_snap_qt_env()
 
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import QApplication

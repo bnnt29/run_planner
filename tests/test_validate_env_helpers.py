@@ -5,11 +5,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from PyQt5.QtGui import QColor
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from run_planner.items import CONDITION_OP, EFFECT_OP, PORT_TYPE
+from run_planner.items import CONDITION_OP, CONNECTION_STATE, EFFECT_OP, PORT_TYPE, STATION_TYPE
 from run_planner.validate_env import CONNECTION_KIND, FlowScene
 
 
@@ -328,3 +329,157 @@ class TestValidateEnvCoreLogic:
         assert FlowScene._resolve_drop_target(scene, attr_src.out_port, station_dst) is station_dst.attr_port
         assert FlowScene._resolve_drop_target(scene, station_src.out_port, station_dst.in_port) is station_dst.in_port
         assert FlowScene._resolve_drop_target(scene, station_src.out_port, object()) is None
+
+
+class TestValidateEnvResultVisualMarkers:
+    class _FakeConnection:
+        def __init__(self):
+            self._state = CONNECTION_STATE.UNKNOWN
+            self._invalid_reasons = []
+            self.src_port = object()
+            self.dst_port = object()
+            self.selected_calls = []
+
+        def set_state(self, state):
+            self._state = state
+
+        def setSelected(self, value):
+            self.selected_calls.append(bool(value))
+
+    class _FakeStation:
+        def __init__(self, node_id: str, station_type=STATION_TYPE.END):
+            self.node_id = node_id
+            self.type = station_type
+            self.end_badge_text_color = QColor("#FFFFFF")
+            self.update_calls = 0
+
+        def update(self):
+            self.update_calls += 1
+
+    def test_apply_validation_result_sets_connection_states_and_reasons(self, monkeypatch):
+        monkeypatch.setattr("run_planner.validate_env.ConnectionItem", self._FakeConnection)
+
+        flow_valid = self._FakeConnection()
+        flow_unknown = self._FakeConnection()
+        attr_conn = self._FakeConnection()
+
+        end_green = self._FakeStation("end_green")
+        end_blue = self._FakeStation("end_blue")
+        end_white = self._FakeStation("end_white")
+
+        generation = 7
+        meta = {
+            "conn_lookup": {11: flow_valid},
+            "station_lookup": {
+                "end_green": end_green,
+                "end_blue": end_blue,
+                "end_white": end_white,
+            },
+            "connection_kinds": {
+                id(flow_valid): CONNECTION_KIND.FLOW,
+                id(flow_unknown): CONNECTION_KIND.FLOW,
+                id(attr_conn): CONNECTION_KIND.ATTRIBUTE,
+            },
+            "target_conn_keys": [11],
+            "target_checkpoint_ids": ["end_green", "end_blue", "end_white"],
+        }
+
+        scene = types.SimpleNamespace(
+            _validation_meta={generation: meta},
+            _validation_generation=generation,
+            _validation_cache_best_states={999: (CONNECTION_STATE.INVALID, ["alt"])},
+            _validation_cache_checkpoint_levels={"old": [1]},
+            _connections=[flow_valid, flow_unknown, attr_conn],
+            _queued_validation=None,
+            _validation_future=None,
+            _validation_cancel_event=None,
+            status_message=types.SimpleNamespace(emit=Mock()),
+            validation_debug=types.SimpleNamespace(emit=Mock()),
+            validation_profiling_enabled=False,
+            selectedItems=lambda: [flow_valid],
+            _connection_kind=lambda conn: CONNECTION_KIND.FLOW,
+            _emit_validation_state=Mock(),
+        )
+
+        result = {
+            "best_states": {
+                11: (CONNECTION_STATE.VALID, ["gültiger Pfad"]),
+            },
+            "checkpoint_levels": {
+                "end_green": [0, 2],
+                "end_blue": [1],
+                "end_white": [2],
+            },
+            "metrics": {
+                "mode": "nu-smv+state",
+                "target_flow": 1,
+                "total_flow": 2,
+                "target_checkpoints": 3,
+                "total_checkpoints": 3,
+                "duration_ms": 10,
+            },
+        }
+
+        FlowScene._apply_validation_result(scene, generation, result)
+
+        assert flow_valid._state == CONNECTION_STATE.VALID
+        assert flow_valid._invalid_reasons == ["gültiger Pfad"]
+        assert flow_unknown._state == CONNECTION_STATE.UNKNOWN
+        assert any("keine erreichbare validierungsroute" in reason.lower() for reason in flow_unknown._invalid_reasons)
+        assert attr_conn._state == CONNECTION_STATE.ATTRIBUTE
+
+        assert end_green.end_badge_text_color.name().lower() == "#22c55e"
+        assert end_blue.end_badge_text_color.name().lower() == "#3b82f6"
+        assert end_white.end_badge_text_color.name().lower() == "#ffffff"
+        assert flow_valid.selected_calls == [False]
+
+    def test_apply_validation_result_keeps_end_badge_white_without_levels(self, monkeypatch):
+        monkeypatch.setattr("run_planner.validate_env.ConnectionItem", self._FakeConnection)
+
+        flow_conn = self._FakeConnection()
+        end_station = self._FakeStation("end_station")
+        generation = 9
+        scene = types.SimpleNamespace(
+            _validation_meta={
+                generation: {
+                    "conn_lookup": {21: flow_conn},
+                    "station_lookup": {"end_station": end_station},
+                    "connection_kinds": {id(flow_conn): CONNECTION_KIND.FLOW},
+                    "target_conn_keys": [21],
+                    "target_checkpoint_ids": ["end_station"],
+                }
+            },
+            _validation_generation=generation,
+            _validation_cache_best_states={},
+            _validation_cache_checkpoint_levels={},
+            _connections=[flow_conn],
+            _queued_validation=None,
+            _validation_future=None,
+            _validation_cancel_event=None,
+            status_message=types.SimpleNamespace(emit=Mock()),
+            validation_debug=types.SimpleNamespace(emit=Mock()),
+            validation_profiling_enabled=False,
+            selectedItems=lambda: [],
+            _connection_kind=lambda conn: CONNECTION_KIND.FLOW,
+            _emit_validation_state=Mock(),
+        )
+
+        FlowScene._apply_validation_result(
+            scene,
+            generation,
+            {
+                "best_states": {21: (CONNECTION_STATE.CONDITIONAL_VALID, ["bedingungenabhängig"])},
+                "checkpoint_levels": {},
+                "metrics": {
+                    "mode": "nu-smv+state",
+                    "target_flow": 1,
+                    "total_flow": 1,
+                    "target_checkpoints": 1,
+                    "total_checkpoints": 1,
+                    "duration_ms": 5,
+                },
+            },
+        )
+
+        assert flow_conn._state == CONNECTION_STATE.CONDITIONAL_VALID
+        assert end_station.end_badge_text_color.name().lower() == "#ffffff"
