@@ -23,7 +23,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-glx libx11-6
+          sudo apt-get install -y libx11-6
 
       - name: Install Python dependencies
         run: |
