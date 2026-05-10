@@ -1,0 +1,13 @@
+{
+  "paths": {
+    "1": {
+      "state": "VALID",
+      "reason_contains": ["g\u00fcltigen pfad"]
+    }
+  },
+  "stations": {
+    "end": {
+      "levels": [0]
+    }
+  }
+}
