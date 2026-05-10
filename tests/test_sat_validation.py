@@ -13,6 +13,7 @@ Tests cover:
 import pytest
 import sys
 import os
+import math
 from pathlib import Path
 from collections import deque
 from unittest.mock import Mock, patch, MagicMock
@@ -24,12 +25,16 @@ from run_planner.sat_validation import (
     _is_cancelled,
     _safe_status_emit,
     _to_float,
+    _default_parallel_workers,
     _check_condition,
     _compile_condition,
     _check_condition_compiled,
     _condition_implies_condition,
     _apply_effects_compiled,
     _apply_effects,
+    _collect_condition_attr_metadata,
+    _normalize_attr_value,
+    _canonical_attrs_condition_aware,
     _graph_reverse,
     _graph_can_reach_checkpoint,
     _graph_strongly_connected_components,
@@ -2118,6 +2123,210 @@ class TestPerformanceAndMemory:
         result = compute_sat_validation(snapshot)
         # Should complete without memory issues
         assert isinstance(result, dict)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 10: Additional Coverage (Complex + Negative/Positive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAdditionalCoverageComplex:
+    """Additional tests focused on uncovered helper and branching paths."""
+
+    def test_default_parallel_workers_cpu_none_and_cap(self):
+        """Default worker calculation should handle missing cpu_count and cap correctly."""
+        with patch("run_planner.sat_validation.os.cpu_count", return_value=None):
+            assert _default_parallel_workers() == 1
+            assert _default_parallel_workers(cap=1, reserve_cores=8) == 1
+
+    def test_condition_metadata_and_normalization_edge_paths(self):
+        """Collect metadata and hit normalization branches including threshold bucket edges."""
+        station_data = {
+            "s": {
+                "rules": [
+                    {
+                        "conditions": [
+                            {"attr_id": "a", "op": CONDITION_OP.GREATER_EQ.value, "value": 2},
+                            {"attr_id": "a", "op": CONDITION_OP.LESS_EQ.value, "value": 10},
+                            {"attr_id": "x", "compare_attr_id": "y", "op": CONDITION_OP.GREATER.value},
+                        ],
+                        "effects": [],
+                    }
+                ]
+            }
+        }
+        flow_conn_conditions = {
+            1: [
+                {"attr_id": "a", "op": CONDITION_OP.EQUALS.value, "value": 5},
+                {"attr_id": "b", "op": CONDITION_OP.EXISTS.value},
+            ]
+        }
+        relevant, compare_attrs, thresholds = _collect_condition_attr_metadata(station_data, flow_conn_conditions)
+
+        assert {"a", "b", "x", "y"}.issubset(relevant)
+        assert {"x", "y"}.issubset(compare_attrs)
+        assert 5.0 in thresholds["a"]
+        assert 0.0 in thresholds["b"]
+
+        # compare attrs keep precision
+        assert _normalize_attr_value("x", 1.234567891, compare_attrs, thresholds) == 1.23456789
+        # above max threshold -> +1.0 sentinel branch
+        assert _normalize_attr_value("a", 100.0, compare_attrs, thresholds) == round(max(thresholds["a"]) + 1.0, 8)
+        # NaN triggers bisect edge branch (idx <= 0)
+        assert _normalize_attr_value("a", math.nan, set(), {"a": (5.0, 10.0)}) == 4.0
+
+        canon = _canonical_attrs_condition_aware(
+            attrs={"a": 6.0, "x": 3.0, "unused": 99.0},
+            relevant_attrs={"a", "x"},
+            compare_attrs=compare_attrs,
+            attr_thresholds=thresholds,
+        )
+        assert ("x", 3.0) in canon
+        assert any(k == "a" for k, _ in canon)
+
+    def test_run_single_nusmv_reachability_cleanup_oserror_ignored(self):
+        """Cleanup OSError in finally should be ignored and result still returned."""
+        class DummyResult:
+            def __init__(self):
+                self.stdout = "is true"
+                self.stderr = ""
+
+        with patch("run_planner.sat_validation.subprocess.run", return_value=DummyResult()):
+            with patch("run_planner.sat_validation.os.remove", side_effect=OSError("deny")):
+                out = _run_single_nusmv_reachability("/bin/echo", "/tmp/model.smv", "cp1")
+        assert out == ("cp1", True)
+
+    def test_run_nusmv_reachability_parallel_cancel_path(self):
+        """Parallel reachability should cancel pending futures when cancel_event flips."""
+        cancel_event = Mock()
+        cancel_event.is_set.side_effect = [True, True, True, True]
+
+        with patch("run_planner.sat_validation._find_nusmv_binary", return_value="/bin/echo"):
+            with patch("run_planner.sat_validation._run_single_nusmv_reachability", return_value=("a", True)):
+                result = _run_nusmv_reachability("/tmp/model.smv", ["a", "b", "c"], cancel_event=cancel_event, max_workers=3)
+        assert result == {}
+
+    def test_complex_queue_pressure_budget_prunes_but_keeps_progress(self):
+        """High queue pressure should prune branch enqueues while still allowing progress."""
+        station_data = {
+            "start": {
+                "rules": [
+                    {"conditions": [], "effects": [{"attr_id": "seed", "action": "=", "value": 1}]}
+                ]
+            },
+            "r1": {"rules": []},
+            "r2": {"rules": []},
+            **{f"m{i}": {"rules": []} for i in range(8)},
+            "end": {"rules": []},
+        }
+
+        flow_succs = {"start": [], **{f"m{i}": [(200 + i, "end")] for i in range(8)}}
+        conn_keys = []
+        for i in range(8):
+            key = 100 + i
+            flow_succs["start"].append((key, f"m{i}"))
+            conn_keys.append(key)
+            conn_keys.append(200 + i)
+
+        snapshot = {
+            "station_data": station_data,
+            # LIFO queue pops the last root first: keep start last so queue pressure
+            # is already high when its wide branch is expanded.
+            "root_ids": ["r1", "r2", "start"],
+            "flow_conn_keys": conn_keys,
+            "target_conn_keys": conn_keys,
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": flow_succs,
+            "flow_conn_conditions": {},
+            "connection_kinds": {k: "FLOW" for k in conn_keys},
+            "queue_backpressure_start": 1,
+            "queue_backpressure_step": 1,
+            "max_depth": 8,
+        }
+
+        result = compute_sat_validation(snapshot)
+        profiling = result["metrics"]["profiling"]
+        assert profiling["branch_enqueues_pruned_by_budget"] >= 1
+        assert profiling["branch_enqueues_allowed"] >= 1
+
+    def test_no_rule_applied_without_matching_rule_remains_invalid(self):
+        """If station rules never match, no transition is created and the edge stays invalid."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"attr_id": "must_exist", "op": CONDITION_OP.EXISTS.value}
+                            ],
+                            "effects": [
+                                {"attr_id": "x", "action": "=", "value": 1},
+                            ],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [900],
+            "target_conn_keys": [900],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(900, "end")]},
+            "flow_conn_conditions": {900: []},
+            "connection_kinds": {900: "FLOW"},
+            "max_depth": 5,
+        }
+
+        result = compute_sat_validation(snapshot)
+        state, reasons = result["best_states"][900]
+        assert state == CONNECTION_STATE.INVALID
+        assert reasons
+        assert result["metrics"]["profiling"]["branch_enqueues_allowed"] == 0
+
+    def test_complex_compare_attr_conditions_positive_and_negative_paths(self):
+        """Complex graph with attr-vs-attr comparisons should produce mixed valid/invalid edges."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [
+                                {"attr_id": "lhs", "action": "=", "value": 5},
+                                {"attr_id": "rhs", "action": "=", "value": 3},
+                            ],
+                        }
+                    ]
+                },
+                "mid_ok": {"rules": []},
+                "mid_bad": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [910, 911, 912],
+            "target_conn_keys": [910, 911, 912],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(910, "mid_ok"), (911, "mid_bad")],
+                "mid_ok": [(912, "end")],
+                "mid_bad": [(912, "end")],
+            },
+            "flow_conn_conditions": {
+                910: [{"attr_id": "lhs", "compare_attr_id": "rhs", "op": CONDITION_OP.GREATER.value}],
+                911: [{"attr_id": "lhs", "compare_attr_id": "rhs", "op": CONDITION_OP.LESS.value}],
+                912: [],
+            },
+            "connection_kinds": {910: "FLOW", 911: "FLOW", 912: "FLOW"},
+            "apply_all_rule_sets": True,
+            "max_depth": 8,
+        }
+
+        result = compute_sat_validation(snapshot)
+        assert result["best_states"][910][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
+        assert result["best_states"][911][0] in {CONNECTION_STATE.INVALID, CONNECTION_STATE.CONDITIONAL_INVALID}
+        assert result["best_states"][912][0] in {CONNECTION_STATE.VALID, CONNECTION_STATE.CONDITIONAL_VALID}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

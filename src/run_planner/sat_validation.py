@@ -743,7 +743,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	)
 	state_parallel_chunk_size = max(
 		state_parallel_min_branches,
-		int(snapshot.get("state_parallel_chunk_size", max(16, state_workers * 8))),
+		int(snapshot.get("state_parallel_chunk_size", max(32, state_workers * 16))),
 	)
 	effect_parallel_min_rules = max(
 		2,
@@ -751,7 +751,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	)
 	effect_parallel_chunk_size = max(
 		effect_parallel_min_rules,
-		int(snapshot.get("effect_parallel_chunk_size", max(16, state_workers * 8))),
+		int(snapshot.get("effect_parallel_chunk_size", max(32, state_workers * 16))),
 	)
 	queue_backpressure_start = max(1, int(snapshot.get("queue_backpressure_start", max(2000, state_workers * 256))))
 	queue_backpressure_step = max(1, int(snapshot.get("queue_backpressure_step", max(500, state_workers * 64))))
@@ -887,6 +887,23 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	station_idx_to_id = list(station_data.keys())
 	station_id_to_idx = {sid: idx for idx, sid in enumerate(station_idx_to_id)}
 	station_component_ids = [station_component_by_id.get(station_id, -1) for station_id in station_idx_to_id]
+
+	# Precompute shortest distance (in edges) from each station to any checkpoint
+	# If a station cannot reach any checkpoint, distance is a large sentinel.
+	_rev = _graph_reverse(flow_succs)
+	_dist_queue = deque()
+	station_distance: dict[str, int] = {sid: 10**9 for sid in station_idx_to_id}
+	for cid in checkpoint_ids:
+		if cid in station_distance:
+			station_distance[cid] = 0
+			_dist_queue.append(cid)
+	while _dist_queue:
+		cur = _dist_queue.popleft()
+		curd = station_distance.get(cur, 10**9)
+		for pred in _rev.get(cur, []):
+			if station_distance.get(pred, 10**9) > curd + 1:
+				station_distance[pred] = curd + 1
+				_dist_queue.append(pred)
 	_safe_status_emit(status_emit, "Validierung: Regeln und Bedingungen werden kompiliert ...")
 
 	rule_limits: list[int] = []
@@ -1151,6 +1168,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	queue_window_dequeued = 0
 	queue_last_window_enqueued = 0
 	queue_last_window_dequeued = 0
+	# Track which state ids are currently enqueued (pending) to avoid duplicates
+	pending_state_ids: set[int] = set()
 	empty_collapse_map: dict[int, tuple[int, ...]] = {}
 	dedup_rule_tasks_skipped = 0
 	dedup_branch_payloads_skipped = 0
@@ -1158,11 +1177,20 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	state_reuse_hits = 0
 	dominance_pruned_states = 0
 	local_dominance_pruned_candidates = 0
+	skipped_no_rule_applied = 0
+	branch_enqueues_pruned_by_budget = 0
+	branch_enqueues_allowed = 0
 	
 	# Early termination tracking removed - can cause incomplete results
 
 	def _enqueue_state(state_id: int, station_idx: int):
 		nonlocal pending_state_count, queue_peak, queue_enqueued_total, queue_window_enqueued
+		# Do not enqueue if traversal/state limit already reached
+		if state_limit_reached:
+			return
+		# Avoid enqueueing the same state multiple times
+		if state_id in pending_state_ids:
+			return
 		component_id = station_component_ids[station_idx]
 		if component_id in cyclic_component_ids:
 			component_queue = component_queues.get(component_id)
@@ -1171,11 +1199,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				component_queues[component_id] = component_queue
 			was_empty = not component_queue
 			component_queue.append(state_id)
+			pending_state_ids.add(state_id)
 			if was_empty and component_id not in active_component_set:
 				active_component_set.add(component_id)
 				active_component_ids.append(component_id)
 		else:
 			queue.append(state_id)
+			pending_state_ids.add(state_id)
 		pending_state_count += 1
 		queue_enqueued_total += 1
 		queue_window_enqueued += 1
@@ -1189,6 +1219,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			component_queue = component_queues.get(component_id)
 			if component_queue:
 				state_id = component_queue.pop()
+				# mark dequeued
+				pending_state_ids.discard(state_id)
 				pending_state_count -= 1
 				queue_dequeued_total += 1
 				queue_window_dequeued += 1
@@ -1199,10 +1231,13 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			active_component_ids.popleft()
 			active_component_set.discard(component_id)
 		if queue:
+			state_id = queue.pop()
+			# mark dequeued
+			pending_state_ids.discard(state_id)
 			pending_state_count -= 1
 			queue_dequeued_total += 1
 			queue_window_dequeued += 1
-			return queue.pop()
+			return state_id
 		return None
 
 	def _counters_leq(left_id: int, right_id: int) -> bool:
@@ -1350,7 +1385,12 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			if dst_id not in can_reach_checkpoint_graph:
 				continue
 
-			next_candidates.append((conn_key, dst_id, post_attrs, post_counters_id))
+			# Include which rule (if any) produced this post-state and whether
+			# the source station actually has rules. Consumers will use this to
+			# avoid enqueuing states created without applying any rule when the
+			# source station does define rules.
+			source_has_rules = bool(rule_entries.get(station_id))
+			next_candidates.append((conn_key, dst_id, post_attrs, post_counters_id, rule_global_idx, source_has_rules))
 
 		return branch_src_reachable, branch_taken, branch_condition_failed, next_candidates
 
@@ -1407,8 +1447,26 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	try:
 		while True:
 			src_state_id = _pop_next_state()
+			# If the queue is temporarily empty, wait a short time for any
+			# in-flight tasks to produce more states before deciding to finish.
 			if src_state_id is None:
-				break
+				# small backoff loop: wait up to 100ms in 10ms steps
+				wait_start = time.perf_counter()
+				waited = False
+				while time.perf_counter() - wait_start < 0.1:
+					if _is_cancelled(cancel_event):
+						cancelled = True
+						break
+					# try to pop again; if a new state was enqueued, continue processing
+					src_state_id = _pop_next_state()
+					if src_state_id is not None:
+						waited = True
+						break
+					# brief sleep to yield to background threads
+					time.sleep(0.01)
+				if src_state_id is None and not waited:
+					# still empty after waiting -> done
+					break
 			if _is_cancelled(cancel_event):
 				cancelled = True
 				break
@@ -1514,7 +1572,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 						if gidx is not None:
 							inc_indices.append(gidx)
 					new_counters_id = _increment_used_counts(counters_id, used_counts, inc_indices)
-					branch_effects.append((_apply_effects_compiled(attrs, effects), new_counters_id, None, {}))
+					# mark combined-apply as rule-applied with sentinel -1
+					branch_effects.append((_apply_effects_compiled(attrs, effects), new_counters_id, -1, {}))
 				else:
 					rule_tasks: list[tuple[list[tuple[str | None, str, float]], int, int | None, dict[int, tuple[int, ...]]]] = []
 					seen_rule_task_keys: set[tuple[tuple[tuple[str | None, str, float], ...], int, tuple[tuple[int, tuple[int, ...]], ...]]] = set()
@@ -1607,14 +1666,23 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			expansion_local_frontier: dict[tuple[int, int], list[int]] = {}
 
 			def _consume_branch_result(branch_result) -> bool:
-				nonlocal transition_count, dedup_next_candidates_skipped, local_dominance_pruned_candidates
+				nonlocal transition_count, dedup_next_candidates_skipped, local_dominance_pruned_candidates, skipped_no_rule_applied, future_observable_edges_skipped, branch_enqueues_pruned_by_budget, branch_enqueues_allowed
 				branch_src_reachable, branch_taken, branch_condition_failed, next_candidates = branch_result
 				edge_src_reachable.update(branch_src_reachable)
 				edge_taken.update(branch_taken)
 				edge_condition_failed.update(branch_condition_failed)
 
 				seen_next_candidates: set[tuple[int, int, int, int]] = set()
-				for conn_key, dst_id, post_attrs, post_counters_id in next_candidates:
+				candidates_list: list[tuple[tuple[int, int, int], tuple[int, int, dict, int, int, bool]]] = []
+				# Collect candidates first, apply budgeted pruning/sorting below.
+				for item in next_candidates:
+					# support both old and new tuple shapes for safety
+					if len(item) >= 6:
+						conn_key, dst_id, post_attrs, post_counters_id, branch_rule_idx, branch_source_has_rules = item
+					else:
+						conn_key, dst_id, post_attrs, post_counters_id = item
+						branch_rule_idx = None
+						branch_source_has_rules = False
 					dst_station_idx = station_id_to_idx[dst_id]
 					dst_cache_key = (id(post_attrs), dst_station_idx)
 					dst_attrs_id = dst_attrs_id_cache.get(dst_cache_key)
@@ -1651,6 +1719,62 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 						dedup_next_candidates_skipped += 1
 						continue
 					expansion_seen_states.add(state_frontier_key)
+					# compute distance heuristic and other flags
+					src_dist = station_distance.get(station_id, 10**9)
+					dst_dist = station_distance.get(dst_id, 10**9)
+					is_target_edge = conn_key in target_conn_keys
+					rule_applied_flag = branch_rule_idx is not None
+					# Early skip: if no rule applied but source has rules, tentatively skip
+					# (store skipped candidates so we can reinstate one if pruning would
+					# otherwise remove the entire branch). This avoids emptying the
+					# global queue by aggressive rule-less pruning.
+					if not rule_applied_flag and branch_source_has_rules:
+						# store skipped candidate for potential reinstatement
+						skipped_no_rule_candidates.append((sort_key, (conn_key, dst_id, post_attrs, post_counters_id, dst_station_idx, dst_attrs_id)))
+						continue
+					# Backpressure check will be applied via budget selection below.
+					# Candidate sorting key: prefer target edges, then smaller dst_dist, then rule_applied
+					sort_key = (0 if is_target_edge else 1, dst_dist, 0 if rule_applied_flag else 1)
+					candidates_list.append((sort_key, (conn_key, dst_id, post_attrs, post_counters_id, dst_station_idx, dst_attrs_id)))
+
+				# If no candidates after filtering, but we had candidates skipped due to
+				# 'no rule applied', reinstate the best skipped candidate so the branch
+				# still progresses. This prevents aggressive pruning from emptying the
+				# global queue and causing premature termination.
+				if not candidates_list:
+					if skipped_no_rule_candidates:
+						# pick best by sort_key (lowest)
+						skipped_no_rule_candidates.sort(key=lambda x: x[0])
+						candidates_list.append(skipped_no_rule_candidates[0])
+						# account for metrics: one earlier increment was not recorded,
+						# so do not modify skipped_no_rule_applied here (it remains a
+						# count of truly skipped candidates)
+					else:
+						return state_limit_reached
+
+				# Decide per-branch enqueue budget based on queue pressure
+				queue_pressure_level = 0
+				if pending_state_count > queue_backpressure_start:
+					queue_pressure_level = (pending_state_count - queue_backpressure_start) // queue_backpressure_step + 1
+				if queue_pressure_level >= 4:
+					budget = 1
+				elif queue_pressure_level >= 2:
+					budget = 2
+				elif queue_pressure_level >= 1:
+					budget = 4
+				else:
+					budget = None
+
+				# Select candidates according to budget and sort key
+				if budget is not None:
+					candidates_list.sort(key=lambda x: x[0])
+					selected = [c[1] for c in candidates_list[:budget]]
+					branch_enqueues_pruned_by_budget += len(candidates_list) - len(selected)
+				else:
+					selected = [c[1] for c in candidates_list]
+
+				# Register selected candidates
+				for conn_key, dst_id, post_attrs, post_counters_id, dst_station_idx, dst_attrs_id in selected:
 					dst_state_id = _register_state(dst_station_idx, dst_attrs_id, post_counters_id, depth + 1)
 					if dst_state_id < 0:
 						continue
@@ -1658,6 +1782,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					if conn_key in target_conn_keys:
 						_append_target_edge(dst_state_id, conn_key)
 					transition_count += 1
+					branch_enqueues_allowed += 1
 
 				return state_limit_reached
 
@@ -1760,6 +1885,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	compiled_flow_conn_conditions.clear()
 	rule_collapse_map.clear()
 	rule_collapse_by_station_rule.clear()
+	# Clear pending IDs tracked for deduplication
+	pending_state_ids.clear()
 
 	best_states = {}
 	for conn_key in target_conn_keys:
@@ -1859,6 +1986,9 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				"state_reuse_hits": state_reuse_hits,
 				"dominance_pruned_states": dominance_pruned_states,
 					"local_dominance_pruned_candidates": local_dominance_pruned_candidates,
+					"skipped_no_rule_applied": skipped_no_rule_applied,
+					"branch_enqueues_pruned_by_budget": branch_enqueues_pruned_by_budget,
+					"branch_enqueues_allowed": branch_enqueues_allowed,
 			},
 		},
 	}
