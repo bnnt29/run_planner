@@ -16,7 +16,6 @@ import uuid
 import json
 import os
 import time
-import numpy as np
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event

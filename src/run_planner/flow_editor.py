@@ -18,7 +18,7 @@ if str(pkg_parent) not in sys.path:
 try:
     from run_planner.ui import MainWindow
 except ImportError:
-    from ui import MainWindow
+    from .ui import MainWindow
 
 
 def _sanitize_snap_qt_env() -> None:

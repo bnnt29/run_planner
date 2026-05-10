@@ -12,7 +12,7 @@ def _ui_types():
     try:
         from .items import StationItem, CONNECTION_STATE
     except ImportError:
-        from items import StationItem, CONNECTION_STATE
+        from .items import StationItem, CONNECTION_STATE
     return StationItem, CONNECTION_STATE
 
 
@@ -60,8 +60,8 @@ def paint_pdf_editor_page(window, painter: QPainter, printer: QPrinter):
     window.scene.render(painter, target, source)
 
 def paint_pdf_clean_editor_page(window, painter: QPainter, printer: QPrinter):
-    from  run_planner.items import ConnectionItem as ConnectionItem
-    from  run_planner.items import CONNECTION_STATE as CONNECTION_STATE
+    from .items import ConnectionItem as ConnectionItem
+    from .items import CONNECTION_STATE as CONNECTION_STATE
     page_rect = printer.pageRect(QPrinter.DevicePixel)
     for item in window.scene.items():
         if isinstance(item, ConnectionItem) and item._state==CONNECTION_STATE.ATTRIBUTE:

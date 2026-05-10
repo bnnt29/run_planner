@@ -204,3 +204,55 @@ def test_import_json_recreates_items_and_links(tmp_path, monkeypatch):
     assert scene.validated is True
     assert window.palette.reset_templates.called
     assert window.statusBar().messages[-1].startswith("JSON geladen:")
+
+
+def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
+    attr = _FakeAttribute()
+    station = _FakeStation(attr=attr)
+    text = _FakeTextBlock("Info")
+    connection = _FakeConnection(attr.out_port, station.attr_port, payload={"kind": "flow", "src": "a", "dst": "b"})
+    scene = _FakeScene([attr, station, text], [connection])
+    scene._build_validation_snapshot = Mock(
+        return_value=(
+            {
+                "station_data": {"start": {"rules": []}, "end": {"rules": []}},
+                "root_ids": ["start"],
+                "checkpoint_ids": ["end"],
+                "flow_succs": {"start": [(99, "end")], "end": []},
+                "flow_conn_conditions": {99: []},
+                "flow_conn_keys": [99],
+                "target_conn_keys": [99],
+                "target_checkpoint_ids": ["end"],
+                "max_depth": 8,
+            },
+            {},
+        )
+    )
+    window = _FakeWindow(scene, str(tmp_path / "my_case.plan.json"))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+    monkeypatch.setattr(
+        json_helper,
+        "compute_sat_validation",
+        lambda snapshot: {
+            "best_states": {10: (SimpleNamespace(name="VALID"), ["ok"])},
+            "checkpoint_levels": {"end": [0]},
+        },
+    )
+
+    json_helper.export_validation_case(window)
+
+    plan_path = tmp_path / "my_case.plan.json"
+    expected_path = tmp_path / "my_case.expected.json"
+    assert plan_path.exists()
+    assert expected_path.exists()
+
+    plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+    expected_data = json.loads(expected_path.read_text(encoding="utf-8"))
+
+    assert "station_data" in plan_data
+    assert plan_data["flow_conn_keys"] == [1]
+    assert "paths" in expected_data
+    assert expected_data["paths"]["10"]["state"] == "VALID"
+    assert expected_data["stations"]["end"]["levels"] == [0]
+    assert window.statusBar().messages[-1].startswith("Testfall exportiert:")

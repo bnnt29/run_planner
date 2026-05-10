@@ -18,7 +18,7 @@ import time
 try:
 	from .items import CONNECTION_STATE, CONDITION_OP
 except ImportError:
-	from items import CONNECTION_STATE, CONDITION_OP  # type: ignore
+	from .items import CONNECTION_STATE, CONDITION_OP
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Helper functions for validation
@@ -1628,6 +1628,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			seen_branch_payloads: dict[tuple[int, int], int] = {}
 			post_attrs_obj_cache: dict[int, int] = {}
 			station_payload_relevant_attrs = station_relevant_attrs_by_idx[station_idx]
+			skipped_no_rule_candidates: list[tuple[tuple[int, int, int], tuple[int, str, dict, int, int, int]]] = []
 			for post_attrs, post_counters_id, rule_global_idx, rule_collapsed_by_conn in branch_effects:
 				obj_id = id(post_attrs)
 				post_attrs_id = post_attrs_obj_cache.get(obj_id)
@@ -1724,6 +1725,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					dst_dist = station_distance.get(dst_id, 10**9)
 					is_target_edge = conn_key in target_conn_keys
 					rule_applied_flag = branch_rule_idx is not None
+					# Candidate sorting key: prefer target edges, then smaller dst_dist, then rule_applied
+					sort_key = (0 if is_target_edge else 1, dst_dist, 0 if rule_applied_flag else 1)
 					# Early skip: if no rule applied but source has rules, tentatively skip
 					# (store skipped candidates so we can reinstate one if pruning would
 					# otherwise remove the entire branch). This avoids emptying the
@@ -1733,8 +1736,6 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 						skipped_no_rule_candidates.append((sort_key, (conn_key, dst_id, post_attrs, post_counters_id, dst_station_idx, dst_attrs_id)))
 						continue
 					# Backpressure check will be applied via budget selection below.
-					# Candidate sorting key: prefer target edges, then smaller dst_dist, then rule_applied
-					sort_key = (0 if is_target_edge else 1, dst_dist, 0 if rule_applied_flag else 1)
 					candidates_list.append((sort_key, (conn_key, dst_id, post_attrs, post_counters_id, dst_station_idx, dst_attrs_id)))
 
 				# If no candidates after filtering, but we had candidates skipped due to

@@ -16,7 +16,6 @@ import os
 import time
 import importlib.util
 from pathlib import Path
-import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
@@ -71,7 +70,7 @@ try:
         NoteLinkItem,
     )
 except ImportError:
-    from items import (
+    from .items import (
         PORT_R,
         STATION_W,
         STATION_H_MIN,
@@ -99,8 +98,8 @@ try:
     from .validate_env import FlowScene as ValidationFlowScene
     from .validate_env import CONNECTION_KIND
 except ImportError:
-    from run_planner.validate_env import FlowScene as ValidationFlowScene
-    from run_planner.validate_env import CONNECTION_KIND
+    from .validate_env import FlowScene as ValidationFlowScene
+    from .validate_env import CONNECTION_KIND
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2157,6 +2156,9 @@ class MainWindow(QMainWindow):
         export_json_act = QAction("Speichern (JSON)", self, shortcut="Ctrl+S")
         export_json_act.triggered.connect(self._export_json)
         fm.addAction(export_json_act)
+        export_validation_case_act = QAction("Als Testfall exportieren (Plan + Validierung)", self)
+        export_validation_case_act.triggered.connect(self._export_validation_case)
+        fm.addAction(export_validation_case_act)
         export_act = QAction("Als PDF exportieren", self, shortcut="Ctrl+P")
         export_act.triggered.connect(self._export_pdf)
         fm.addAction(export_act)
@@ -2807,6 +2809,10 @@ class MainWindow(QMainWindow):
     def _export_json(self):
         import run_planner.json_helper as json_helpers
         return json_helpers.export_json(self)
+
+    def _export_validation_case(self):
+        import run_planner.json_helper as json_helpers
+        return json_helpers.export_validation_case(self)
 
     def _import_json(self):
         import run_planner.json_helper as json_helpers

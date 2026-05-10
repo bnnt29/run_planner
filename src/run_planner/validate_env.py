@@ -17,8 +17,8 @@ try:
     from .items import *  # noqa: F401,F403
     from .sat_validation import compute_sat_validation
 except ImportError:
-    from items import *  # type: ignore # noqa: F401,F403
-    from sat_validation import compute_sat_validation  # type: ignore
+    from .items import *  # noqa: F401,F403
+    from .sat_validation import compute_sat_validation
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SZENE
@@ -408,7 +408,7 @@ class FlowScene(QGraphicsScene):
         try:
             from .ui import StationDialog
         except ImportError:
-            from ui import StationDialog  # type: ignore
+            from .ui import StationDialog
         parent = self.views()[0] if self.views() else None
         dlg    = StationDialog(item, self._connected_attributes(item), parent)
         if dlg.exec_() == QDialog.Accepted:
@@ -425,7 +425,7 @@ class FlowScene(QGraphicsScene):
         try:
             from .ui import AttributeDialog
         except ImportError:
-            from ui import AttributeDialog  # type: ignore
+            from .ui import AttributeDialog
         parent = self.views()[0] if self.views() else None
         while True:
             dlg = AttributeDialog(item, parent)
@@ -450,7 +450,7 @@ class FlowScene(QGraphicsScene):
         try:
             from .ui import ConnectionDialog
         except ImportError:
-            from ui import ConnectionDialog  # type: ignore
+            from .ui import ConnectionDialog
         parent = self.views()[0] if self.views() else None
         previous_conditions = [Condition(c.attribute, c.operator, c.value, c.compare_attribute) for c in conn.conditions]
         previous_name = conn.name
@@ -486,7 +486,7 @@ class FlowScene(QGraphicsScene):
         try:
             from .ui import TextDialog
         except ImportError:
-            from ui import TextDialog  # type: ignore
+            from .ui import TextDialog
         parent = self.views()[0] if self.views() else None
         dlg    = TextDialog(item, parent)
         if dlg.exec_() == QDialog.Accepted:
@@ -682,6 +682,11 @@ class FlowScene(QGraphicsScene):
             target_conn_keys = set(flow_conn_keys)
             target_checkpoint_ids = set(checkpoint_ids)
         else:
+            predecessors = {sid: [] for sid in flow_succs.keys()}
+            for src_id, entries in flow_succs.items():
+                for _, dst_id in entries:
+                    predecessors.setdefault(dst_id, []).append(src_id)
+
             affected_nodes = set(changed_station_ids)
             queue = deque(changed_station_ids)
             while queue:
@@ -690,6 +695,10 @@ class FlowScene(QGraphicsScene):
                     if succ_id not in affected_nodes:
                         affected_nodes.add(succ_id)
                         queue.append(succ_id)
+                for pred_id in predecessors.get(node_id, []):
+                    if pred_id not in affected_nodes:
+                        affected_nodes.add(pred_id)
+                        queue.append(pred_id)
 
             for conn_key in changed_conn_keys:
                 srcdst = flow_conn_srcdst.get(conn_key)

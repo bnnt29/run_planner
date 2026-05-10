@@ -18,7 +18,9 @@ classifiers = [
 dependencies = [
   "PyQt5",
   "numpy",
-  "z3-solver"
+  "z3-solver",
+  "pytest",
+  "pytest-cov",
 ]
 
 [project.optional-dependencies]

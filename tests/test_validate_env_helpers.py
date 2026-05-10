@@ -9,6 +9,7 @@ from PyQt5.QtGui import QColor
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import run_planner.validate_env as validate_env_module
 
 from run_planner.items import CONDITION_OP, CONNECTION_STATE, EFFECT_OP, PORT_TYPE, STATION_TYPE
 from run_planner.validate_env import CONNECTION_KIND, FlowScene
@@ -244,6 +245,7 @@ class TestValidateEnvCoreLogic:
         def __init__(self):
             self.in_port = TestValidateEnvCoreLogic._FakePort(self, PORT_TYPE.INPUT)
             self.out_port = TestValidateEnvCoreLogic._FakePort(self, PORT_TYPE.OUTPUT)
+            self.rules = []
             self.attr_port = TestValidateEnvCoreLogic._FakePort(self, PORT_TYPE.ATTR_INPUT)
 
     class _FakeAttribute:
@@ -254,7 +256,9 @@ class TestValidateEnvCoreLogic:
     class _FakeConnection:
         def __init__(self, src_port=None, dst_port=None):
             self.src_port = src_port
+            self.kind = CONNECTION_KIND.FLOW
             self.dst_port = dst_port
+            self.conditions = []
 
     def test_attribute_name_helpers(self):
         scene = types.SimpleNamespace()
@@ -270,6 +274,46 @@ class TestValidateEnvCoreLogic:
         assert FlowScene.attribute_name_exists(scene, "", exclude_item=attr_b) is False
         assert FlowScene.make_unique_attribute_name(scene, "Name") == "Name (2)"
         assert FlowScene.make_unique_attribute_name(scene, "Unique") == "Unique"
+
+    def test_build_validation_snapshot_invalidates_upstream_paths_for_changed_terminal_node(self, monkeypatch):
+        start = self._FakeStation()
+        start.node_id = "start"
+        start.name = "Start"
+        start.type = STATION_TYPE.START
+        mid = self._FakeStation()
+        mid.node_id = "mid"
+        mid.name = "Mid"
+        mid.type = STATION_TYPE.NORMAL
+        end = self._FakeStation()
+        end.node_id = "end"
+        end.name = "End"
+        end.type = STATION_TYPE.END
+
+        c1 = self._FakeConnection(start.out_port, mid.in_port)
+        c2 = self._FakeConnection(mid.out_port, end.in_port)
+        start.out_port.connections = [c1]
+        mid.in_port.connections = [c1]
+        mid.out_port.connections = [c2]
+        end.in_port.connections = [c2]
+
+        monkeypatch.setattr(validate_env_module, "StationItem", self._FakeStation)
+        monkeypatch.setattr(validate_env_module, "AttributeItem", self._FakeAttribute)
+        monkeypatch.setattr(validate_env_module, "ConnectionItem", self._FakeConnection)
+
+        scene = types.SimpleNamespace()
+        scene._station_items = lambda: [start, mid, end]
+        scene._connections = [c1, c2]
+        scene._validation_cache_best_states = {1: True}
+        scene._connection_kind = lambda conn: FlowScene._connection_kind(scene, conn)
+        scene._snapshot_condition = FlowScene._snapshot_condition
+        scene._snapshot_effect = FlowScene._snapshot_effect
+
+        snapshot, meta = FlowScene._build_validation_snapshot(scene, changed_targets=[end])
+
+        assert snapshot is not None
+        assert meta is not None
+        assert set(snapshot["target_conn_keys"]) == {id(c1), id(c2)}
+        assert set(snapshot["target_checkpoint_ids"]) == {"end"}
 
     def test_connected_attributes_collects_unique_attribute_sources(self, monkeypatch):
         monkeypatch.setattr("run_planner.validate_env.AttributeItem", self._FakeAttribute)
