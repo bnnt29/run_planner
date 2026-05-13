@@ -5,8 +5,11 @@ import os
 import sys
 import sysconfig
 import json as stdjson
+from pathlib import Path
+from typing import Any
 
 from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtGui import QColor
 
 try:
     from .sat_validation import compute_sat_validation
@@ -177,7 +180,112 @@ def export_validation_case(window):
     window.statusBar().showMessage(f"Testfall exportiert: {plan_path} + {expected_path}")
 
 
-def import_json(window, json_file_path=None):
+def _stable_flow_conn_map(scene) -> dict[int, Any]:
+    """Map deterministic/stable FLOW connection keys to live ConnectionItem instances."""
+    AttributeItem, StationItem, _, _ = _ui_types()
+
+    edge_refs = []
+    conn_by_runtime_id = {}
+    for conn in scene._connections:
+        runtime_id = id(conn)
+        conn_by_runtime_id[runtime_id] = conn
+
+        kind = scene._connection_kind(conn)
+        kind_name = getattr(kind, "name", str(kind)).upper()
+        if kind_name != "FLOW":
+            continue
+
+        src = conn.src_port.parentItem() if conn.src_port else None
+        dst = conn.dst_port.parentItem() if conn.dst_port else None
+        if not isinstance(src, StationItem) or not isinstance(dst, StationItem):
+            continue
+
+        edge_refs.append((str(src.node_id), str(dst.node_id), runtime_id))
+
+    edge_refs.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    stable_map = {}
+    for stable_key, (_, _, runtime_id) in enumerate(edge_refs, start=1):
+        stable_map[stable_key] = conn_by_runtime_id[runtime_id]
+    return stable_map
+
+
+def _apply_expected_markings(window, expected_data: dict):
+    try:
+        from .items import CONNECTION_STATE, STATION_TYPE
+    except ImportError:
+        from .items import CONNECTION_STATE, STATION_TYPE
+
+    _, StationItem, _, _ = _ui_types()
+
+    stable_conn_map = _stable_flow_conn_map(window.scene)
+
+    best_states_cache = {}
+    for conn in window.scene._connections:
+        conn._invalid_reasons = []
+        kind = window.scene._connection_kind(conn)
+        kind_name = getattr(kind, "name", str(kind)).upper()
+        if kind_name == "ATTRIBUTE":
+            conn.set_state(CONNECTION_STATE.ATTRIBUTE)
+        elif kind_name == "FLOW":
+            conn.set_state(CONNECTION_STATE.UNKNOWN)
+        else:
+            conn.set_state(CONNECTION_STATE.INVALID)
+
+    for conn_key_str, payload in (expected_data.get("paths", {}) or {}).items():
+        try:
+            conn_key = int(conn_key_str)
+        except (TypeError, ValueError):
+            continue
+        conn = stable_conn_map.get(conn_key)
+        if conn is None:
+            continue
+
+        state_name = str(payload.get("state", "UNKNOWN"))
+        state = CONNECTION_STATE.__members__.get(state_name, CONNECTION_STATE.UNKNOWN)
+        reasons = []
+        reason_contains = payload.get("reason_contains", []) or []
+        for reason in reason_contains:
+            if isinstance(reason, str):
+                reasons.append(reason)
+
+        conn.set_state(state)
+        conn._invalid_reasons = reasons
+        best_states_cache[id(conn)] = (state, reasons)
+
+    checkpoint_levels_cache = {}
+    expected_stations = expected_data.get("stations", {}) or {}
+    for station_id, payload in expected_stations.items():
+        levels = payload.get("levels", []) if isinstance(payload, dict) else []
+        if isinstance(levels, list):
+            checkpoint_levels_cache[str(station_id)] = list(levels)
+
+    for item in window.scene.items():
+        if not isinstance(item, StationItem):
+            continue
+        station_type = getattr(item, "type", None)
+        is_end = station_type == STATION_TYPE.END or getattr(station_type, "name", "") == "END"
+        if not is_end:
+            continue
+
+        levels = set(checkpoint_levels_cache.get(str(item.node_id), []))
+        if levels:
+            best_level = min(levels)
+            if best_level == 0:
+                item.end_badge_text_color = QColor("#22C55E")
+            elif best_level == 1:
+                item.end_badge_text_color = QColor("#3B82F6")
+            else:
+                item.end_badge_text_color = QColor("#FFFFFF")
+        else:
+            item.end_badge_text_color = QColor("#FFFFFF")
+        item.update()
+
+    window.scene._validation_cache_best_states = best_states_cache
+    window.scene._validation_cache_checkpoint_levels = checkpoint_levels_cache
+
+
+def import_json(window, json_file_path=None, _skip_expected_autoload: bool = False):
     if json_file_path:
         path = json_file_path
     else:
@@ -189,6 +297,37 @@ def import_json(window, json_file_path=None):
     )
     if not path:
         return False
+
+    lower_path = path.lower()
+    if lower_path.endswith(".expected.json"):
+        expected_path = Path(path)
+        plan_path = expected_path.with_name(expected_path.name[: -len(".expected.json")] + ".plan.json")
+        if not plan_path.exists():
+            QMessageBox.critical(
+                window,
+                "Laden fehlgeschlagen",
+                f"Passende Plan-Datei wurde nicht gefunden:\n{plan_path}",
+            )
+            return False
+
+        try:
+            expected_data = stdjson.loads(expected_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            QMessageBox.critical(window, "Laden fehlgeschlagen", f"Expected-JSON konnte nicht geladen werden:\n{exc}")
+            return False
+
+        loaded = import_json(window, str(plan_path), _skip_expected_autoload=True)
+        if not loaded:
+            return False
+
+        try:
+            _apply_expected_markings(window, expected_data)
+        except Exception as exc:
+            QMessageBox.critical(window, "Laden fehlgeschlagen", f"Markierungen konnten nicht angewendet werden:\n{exc}")
+            return False
+
+        window.statusBar().showMessage(f"Testfall geladen: {plan_path} + {expected_path}")
+        return True
 
     AttributeItem, StationItem, TextBlockItem, ConnectionItem = _ui_types()
 
@@ -280,6 +419,27 @@ def import_json(window, json_file_path=None):
     if hasattr(window.scene, "rebuild_note_links"):
         window.scene.rebuild_note_links()
 
+    expected_applied = False
+    expected_path = None
+    scene_auto_validation = bool(getattr(window.scene, "auto_validate_enabled", True))
+    if not _skip_expected_autoload and (not scene_auto_validation) and lower_path.endswith(".plan.json"):
+        plan_path_obj = Path(path)
+        expected_path = plan_path_obj.with_name(plan_path_obj.name[: -len(".plan.json")] + ".expected.json")
+        if expected_path.exists():
+            try:
+                expected_data = stdjson.loads(expected_path.read_text(encoding="utf-8"))
+                _apply_expected_markings(window, expected_data)
+                expected_applied = True
+            except Exception as exc:
+                QMessageBox.warning(
+                    window,
+                    "Expected-Validierung nicht angewendet",
+                    f"Die Plan-Datei wurde geladen, aber die Expected-Markierungen konnten nicht angewendet werden:\n{exc}",
+                )
+
     window.scene.validate_all()
-    window.statusBar().showMessage(f"JSON geladen: {path}")
+    if expected_applied and expected_path is not None:
+        window.statusBar().showMessage(f"Testfall geladen: {path} + {expected_path}")
+    else:
+        window.statusBar().showMessage(f"JSON geladen: {path}")
     return True

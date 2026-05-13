@@ -68,6 +68,7 @@ class _FakeStation:
         self.rules = []
         self.attr_port = _FakePort(self)
         self.in_port = _FakePort(self)
+        self.out_port = _FakePort(self)
         self.type = SimpleNamespace(value=1)
         if attr is not None:
             self.rules = [SimpleNamespace(conditions=[SimpleNamespace(attribute=attr)], effects=[SimpleNamespace(attribute=attr)])]
@@ -86,12 +87,29 @@ class _FakeConnection:
         self.src_port = src_port
         self.dst_port = dst_port
         self._payload = payload or {"kind": "flow"}
+        self._state = None
+        self._invalid_reasons = []
 
     def finalize(self, dst_port):
         self.dst_port = dst_port
 
     def to_json(self):
         return dict(self._payload)
+
+    def set_state(self, state):
+        self._state = state
+
+    @classmethod
+    def from_json(cls, data, node_map):
+        src = node_map.get(data.get("src_node_id"))
+        dst = node_map.get(data.get("dst_node_id"))
+        if src is None or dst is None:
+            return None
+        src_port = getattr(src, "out_port", None)
+        dst_port = getattr(dst, "in_port", None)
+        if src_port is None or dst_port is None:
+            return None
+        return cls(src_port, dst_port, payload={"kind": "flow"})
 
 
 class _FakeScene:
@@ -104,6 +122,7 @@ class _FakeScene:
         self.rebuilt = False
         self.unique_calls = []
         self._validation_cache_best_states = {1: True}
+        self.auto_validate_enabled = True
 
     def items(self):
         return list(self._items)
@@ -126,6 +145,8 @@ class _FakeScene:
         self.updated.append(item)
 
     def validate_all(self):
+        if not self.auto_validate_enabled:
+            return
         self.validated = True
 
     def rebuild_note_links(self):
@@ -256,3 +277,77 @@ def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     assert expected_data["paths"]["10"]["state"] == "VALID"
     assert expected_data["stations"]["end"]["levels"] == [0]
     assert window.statusBar().messages[-1].startswith("Testfall exportiert:")
+
+
+def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypatch):
+    plan_data = {
+        "attributes": [{"node_id": "attr-1", "name": "Attr", "x": 1, "y": 2}],
+        "stations": [{"node_id": "station-1", "name": "Station", "x": 3, "y": 4, "rules": []}],
+        "textblocks": [],
+        "connections": [],
+    }
+    expected_data = {
+        "paths": {"1": {"state": "VALID"}},
+        "stations": {"station-1": {"levels": [0]}},
+    }
+
+    plan_path = tmp_path / "case.plan.json"
+    expected_path = tmp_path / "case.expected.json"
+    plan_path.write_text(json.dumps(plan_data), encoding="utf-8")
+    expected_path.write_text(json.dumps(expected_data), encoding="utf-8")
+
+    scene = _FakeScene()
+    window = _FakeWindow(scene, str(expected_path))
+
+    apply_mock = Mock()
+    monkeypatch.setattr(json_helper, "_apply_expected_markings", apply_mock)
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    ok = json_helper.import_json(window, str(expected_path))
+
+    assert ok is True
+    apply_mock.assert_called_once()
+    assert window.statusBar().messages[-1].startswith("Testfall geladen:")
+
+
+def test_import_plan_autoloads_expected_when_auto_validation_disabled(tmp_path, monkeypatch):
+    plan_data = {
+        "attributes": [{"node_id": "attr-1", "name": "Attr", "x": 1, "y": 2}],
+        "stations": [
+            {"node_id": "station-1", "name": "A", "x": 0, "y": 0, "rules": []},
+            {"node_id": "station-2", "name": "B", "x": 100, "y": 0, "rules": []},
+        ],
+        "textblocks": [],
+        "connections": [
+            {
+                "src_node_id": "station-1",
+                "src_port_type": "output",
+                "dst_node_id": "station-2",
+                "dst_port_type": "input",
+                "name": "",
+                "conditions": [],
+            }
+        ],
+    }
+    expected_data = {
+        "paths": {"1": {"state": "VALID"}},
+        "stations": {},
+    }
+
+    plan_path = tmp_path / "auto_case.plan.json"
+    expected_path = tmp_path / "auto_case.expected.json"
+    plan_path.write_text(json.dumps(plan_data), encoding="utf-8")
+    expected_path.write_text(json.dumps(expected_data), encoding="utf-8")
+
+    scene = _FakeScene()
+    scene.auto_validate_enabled = False
+    window = _FakeWindow(scene, str(plan_path))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    ok = json_helper.import_json(window, str(plan_path))
+
+    assert ok is True
+    assert window.statusBar().messages[-1].startswith("Testfall geladen:")
+    assert scene.validated is False  # validate_all is no-op when auto validation is disabled
+    assert scene._validation_cache_best_states
