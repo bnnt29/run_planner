@@ -144,8 +144,8 @@ class _FakeScene:
     def update_connections_for(self, item):
         self.updated.append(item)
 
-    def validate_all(self):
-        if not self.auto_validate_enabled:
+    def validate_all(self, force: bool = False):
+        if not self.auto_validate_enabled and not force:
             return
         self.validated = True
 
@@ -271,12 +271,17 @@ def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
     expected_data = json.loads(expected_path.read_text(encoding="utf-8"))
 
-    assert "station_data" in plan_data
-    assert plan_data["flow_conn_keys"] == [1]
+    # Plan should have normal scene structure (not snapshot)
+    assert "attributes" in plan_data
+    assert "stations" in plan_data
+    assert "connections" in plan_data
+    assert "version" in plan_data
     assert "paths" in expected_data
     assert expected_data["paths"]["10"]["state"] == "VALID"
     assert expected_data["stations"]["end"]["levels"] == [0]
     assert window.statusBar().messages[-1].startswith("Testfall exportiert:")
+
+
 
 
 def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypatch):
@@ -307,6 +312,7 @@ def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypa
 
     assert ok is True
     apply_mock.assert_called_once()
+    assert scene.validated is True  # validate_all is called after applying markings
     assert window.statusBar().messages[-1].startswith("Testfall geladen:")
 
 

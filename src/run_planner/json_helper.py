@@ -143,36 +143,43 @@ def export_validation_case(window):
     expected_path = f"{base_path}.expected.json"
 
     try:
-        plan_data = _build_stable_validation_snapshot(window.scene)
-        if plan_data is None:
+        # Export the scene normally (full structure with attributes, stations, connections)
+        plan_data = _serialize_scene(window)
+        
+        if not plan_data.get("stations"):
             QMessageBox.warning(window, "Export abgebrochen", "Der aktuelle Plan enthält keine Stationen.")
             return
 
-        validation_result = compute_sat_validation(plan_data)
-
-        paths = {}
-        for conn_key, payload in sorted(validation_result.get("best_states", {}).items()):
-            state = payload[0]
-            paths[str(conn_key)] = {
-                "state": getattr(state, "name", str(state)),
-            }
-
-        stations = {}
-        checkpoint_levels = validation_result.get("checkpoint_levels", {})
-        for station_id in sorted(plan_data.get("checkpoint_ids", [])):
-            stations[station_id] = {
-                "levels": list(checkpoint_levels.get(station_id, [])),
-            }
-
-        expected_data = {
-            "paths": paths,
-            "stations": stations,
-        }
-
+        # Save the plan with full scene structure
         with open(plan_path, "w", encoding="utf-8") as f:
             stdjson.dump(plan_data, f, ensure_ascii=False, indent=2)
-        with open(expected_path, "w", encoding="utf-8") as f:
-            stdjson.dump(expected_data, f, ensure_ascii=False, indent=2)
+
+        # Build validation snapshot and compute validation for expected data
+        snapshot = _build_stable_validation_snapshot(window.scene)
+        if snapshot is not None:
+            validation_result = compute_sat_validation(snapshot)
+
+            paths = {}
+            for conn_key, payload in sorted(validation_result.get("best_states", {}).items()):
+                state = payload[0]
+                paths[str(conn_key)] = {
+                    "state": getattr(state, "name", str(state)),
+                }
+
+            stations = {}
+            checkpoint_levels = validation_result.get("checkpoint_levels", {})
+            for station_id in sorted(snapshot.get("checkpoint_ids", [])):
+                stations[station_id] = {
+                    "levels": list(checkpoint_levels.get(station_id, [])),
+                }
+
+            expected_data = {
+                "paths": paths,
+                "stations": stations,
+            }
+
+            with open(expected_path, "w", encoding="utf-8") as f:
+                stdjson.dump(expected_data, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         QMessageBox.critical(window, "Export fehlgeschlagen", f"Testfall konnte nicht exportiert werden:\n{exc}")
         return
@@ -285,7 +292,12 @@ def _apply_expected_markings(window, expected_data: dict):
     window.scene._validation_cache_checkpoint_levels = checkpoint_levels_cache
 
 
-def import_json(window, json_file_path=None, _skip_expected_autoload: bool = False):
+def import_json(
+    window,
+    json_file_path=None,
+    _skip_expected_autoload: bool = False,
+    _skip_validation: bool = False,
+):
     if json_file_path:
         path = json_file_path
     else:
@@ -316,7 +328,12 @@ def import_json(window, json_file_path=None, _skip_expected_autoload: bool = Fal
             QMessageBox.critical(window, "Laden fehlgeschlagen", f"Expected-JSON konnte nicht geladen werden:\n{exc}")
             return False
 
-        loaded = import_json(window, str(plan_path), _skip_expected_autoload=True)
+        loaded = import_json(
+            window,
+            str(plan_path),
+            _skip_expected_autoload=True,
+            _skip_validation=True,
+        )
         if not loaded:
             return False
 
@@ -326,6 +343,7 @@ def import_json(window, json_file_path=None, _skip_expected_autoload: bool = Fal
             QMessageBox.critical(window, "Laden fehlgeschlagen", f"Markierungen konnten nicht angewendet werden:\n{exc}")
             return False
 
+        window.scene.validate_all(force=True)
         window.statusBar().showMessage(f"Testfall geladen: {plan_path} + {expected_path}")
         return True
 
@@ -437,7 +455,8 @@ def import_json(window, json_file_path=None, _skip_expected_autoload: bool = Fal
                     f"Die Plan-Datei wurde geladen, aber die Expected-Markierungen konnten nicht angewendet werden:\n{exc}",
                 )
 
-    window.scene.validate_all()
+    if not _skip_validation:
+        window.scene.validate_all()
     if expected_applied and expected_path is not None:
         window.statusBar().showMessage(f"Testfall geladen: {path} + {expected_path}")
     else:
