@@ -1,0 +1,93 @@
+{
+  "paths": {
+    "1": {
+      "state": "INVALID"
+    },
+    "2": {
+      "state": "VALID"
+    },
+    "3": {
+      "state": "INVALID"
+    },
+    "4": {
+      "state": "INVALID"
+    },
+    "5": {
+      "state": "INVALID"
+    },
+    "6": {
+      "state": "INVALID"
+    },
+    "7": {
+      "state": "INVALID"
+    },
+    "8": {
+      "state": "VALID"
+    },
+    "9": {
+      "state": "INVALID"
+    },
+    "10": {
+      "state": "INVALID"
+    },
+    "11": {
+      "state": "INVALID"
+    },
+    "12": {
+      "state": "INVALID"
+    },
+    "13": {
+      "state": "INVALID"
+    },
+    "14": {
+      "state": "INVALID"
+    },
+    "15": {
+      "state": "VALID"
+    }
+  },
+  "stations": {
+    "0f9c530729584afb8081bfcf20a3287d": {
+      "levels": [
+        0
+      ]
+    },
+    "13d6cef79ff44fdb927559989950d164": {
+      "levels": []
+    },
+    "17eb503404e343f1a9eb0fac4096c003": {
+      "levels": [
+        0
+      ]
+    },
+    "22198900142841eb93448c7bf8dc9eb8": {
+      "levels": []
+    },
+    "22fcb2a5de534007b55ec10940698dcb": {
+      "levels": [
+        0
+      ]
+    },
+    "4004528183ff4edf8f20811910745877": {
+      "levels": [
+        0
+      ]
+    },
+    "459655089b7d4c869fe38084c39c70cb": {
+      "levels": []
+    },
+    "52705cf925d24adc9c60118b230beacc": {
+      "levels": []
+    },
+    "b668c7a18c4749709797974260de1d57": {
+      "levels": [
+        0
+      ]
+    },
+    "bf3379b00a30410ca49138157218638a": {
+      "levels": [
+        0
+      ]
+    }
+  }
+}

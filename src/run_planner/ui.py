@@ -854,6 +854,30 @@ class FlowScene(ValidationFlowScene):
 
         self.show_connection_hitboxes = False
         self.show_attribute_connections = True
+        self.show_debug_identifiers = False
+
+    def get_debug_path_number(self, connection: ConnectionItem) -> int | None:
+        if connection is None:
+            return None
+
+        flow_edges = []
+        for conn in self._connections:
+            if self._connection_kind(conn) != CONNECTION_KIND.FLOW:
+                continue
+            src_item = conn.src_port.parentItem() if conn.src_port else None
+            dst_item = conn.dst_port.parentItem() if conn.dst_port else None
+            if src_item is None or dst_item is None:
+                continue
+            if getattr(src_item, "node_id", None) is None or getattr(dst_item, "node_id", None) is None:
+                continue
+            flow_edges.append((str(src_item.node_id), str(dst_item.node_id), conn))
+
+        flow_edges.sort(key=lambda item: (item[0], item[1], id(item[2])))
+        for idx, (_, _, conn) in enumerate(flow_edges, start=1):
+            if conn is connection:
+                return idx
+        return None
+
     def set_palette(self, palette_widget):
         self.palette_widget = palette_widget
 
@@ -1950,6 +1974,8 @@ class MainWindow(QMainWindow):
         self._show_connection_hitboxes = False
         self._show_attribute_connections_actions = []
         self._show_attribute_connections = True
+        self._show_debug_identifiers_actions = []
+        self._show_debug_identifiers = False
         self.scene.status_message.connect(self._set_status)
         self.scene.validation_debug.connect(self._set_validation_debug)
         self.scene.validation_state_changed.connect(self._set_validation_action_state)
@@ -2113,6 +2139,32 @@ class MainWindow(QMainWindow):
         tb.addWidget(attribute_connections_switch)
         self._show_attribute_connections_actions.append(attribute_connections_switch)
 
+        debug_identifiers_switch = QCheckBox("ID-Debug (Station/Pfad)")
+        debug_identifiers_switch.setChecked(self._show_debug_identifiers)
+        debug_identifiers_switch.toggled.connect(self._set_show_debug_identifiers)
+        debug_identifiers_switch.setStyleSheet(
+            """
+            QCheckBox {
+                color: #E2E8F0;
+                spacing: 8px;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 34px;
+                height: 18px;
+                border-radius: 9px;
+                background: #475569;
+                border: 1px solid #334155;
+            }
+            QCheckBox::indicator:checked {
+                background: #22C55E;
+                border: 1px solid #16A34A;
+            }
+            """
+        )
+        tb.addWidget(debug_identifiers_switch)
+        self._show_debug_identifiers_actions.append(debug_identifiers_switch)
+
         tb.addSeparator()
         lbl = QLabel("  Entf = ausgewählte Elemente löschen  │  "
                      "Doppelklick = bearbeiten  │  "
@@ -2223,6 +2275,13 @@ class MainWindow(QMainWindow):
         attr_conn_act.toggled.connect(self._set_show_attribute_connections)
         em.addAction(attr_conn_act)
         self._show_attribute_connections_actions.append(attr_conn_act)
+
+        id_debug_act = QAction("ID-Debug in Namen anzeigen", self)
+        id_debug_act.setCheckable(True)
+        id_debug_act.setChecked(self._show_debug_identifiers)
+        id_debug_act.toggled.connect(self._set_show_debug_identifiers)
+        em.addAction(id_debug_act)
+        self._show_debug_identifiers_actions.append(id_debug_act)
 
     def _build_reachability_panel(self):
         panel = QFrame(self.view.viewport())
@@ -2627,6 +2686,29 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
         self.statusBar().showMessage(
             "ATTRIBUTE-Verbindungen angezeigt" if enabled else "ATTRIBUTE-Verbindungen verborgen"
+        )
+
+    def _set_show_debug_identifiers(self, enabled: bool):
+        self._show_debug_identifiers = enabled
+        self.scene.show_debug_identifiers = enabled
+        for action in self._show_debug_identifiers_actions:
+            if action.isChecked() != enabled:
+                action.blockSignals(True)
+                action.setChecked(enabled)
+                action.blockSignals(False)
+
+        # Re-layout station headers because debug labels can widen title text.
+        for station in self.scene._station_items():
+            station._layout()
+            station.update()
+            self.scene.update_connections_for(station)
+
+        for conn in self.scene._connections:
+            conn.update()
+
+        self.view.viewport().update()
+        self.statusBar().showMessage(
+            "ID-Debug aktiviert" if enabled else "ID-Debug deaktiviert"
         )
 
 

@@ -277,7 +277,7 @@ class StationItem(ObjectItem):
 
         # Title area reserves badge space and right gap in the header.
         badge_reserved_w = 58 + 24 if self.type != STATION_TYPE.NORMAL else 12
-        title_required_w = title_metrics.horizontalAdvance(self.name or "") + 10 + badge_reserved_w
+        title_required_w = title_metrics.horizontalAdvance(self._display_name()) + 10 + badge_reserved_w
 
         self._w = min(max(STATION_W, rules_required_w, title_required_w), 1200)
         
@@ -297,6 +297,12 @@ class StationItem(ObjectItem):
         self.out_port.setZValue(self.zValue() + 1)
         self.attr_port.setZValue(self.zValue() + 1)
         self.prepareGeometryChange()
+
+    def _display_name(self) -> str:
+        scene = self.scene()
+        if scene is not None and getattr(scene, "show_debug_identifiers", False):
+            return f"{self.name} [station_id={self.node_id}]"
+        return self.name
 
     def type(self):
         return self.ItemType
@@ -377,10 +383,11 @@ class StationItem(ObjectItem):
         # ── Title ──
         painter.setPen(QColor(255, 255, 255, 240))
         painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        title_text = self._display_name()
         painter.drawText(
             QRectF(10, 2, self._w - badge_w - 24, HEADER_H - 4),
             Qt.AlignVCenter | Qt.AlignLeft,
-            self.name
+            title_text
         )
 
         # ── Rules ──
@@ -804,6 +811,26 @@ class ConnectionItem(QGraphicsPathItem):
     def doubleClickTarget(self):
         return self.src_port.parentItem() if self.src_port else None
 
+    def _debug_suffix(self, scene) -> str:
+        if scene is None or not getattr(scene, "show_debug_identifiers", False):
+            return ""
+
+        parts = [f"path_id={id(self)}"]
+        if hasattr(scene, "get_debug_path_number"):
+            path_number = scene.get_debug_path_number(self)
+            if path_number is not None:
+                parts.append(f"path_no={path_number}")
+        return " [" + ", ".join(parts) + "]"
+
+    def _display_name(self, scene) -> str:
+        suffix = self._debug_suffix(scene)
+        base_name = (self.name or "").strip()
+        if base_name:
+            return f"{base_name}{suffix}"
+        if suffix:
+            return suffix.strip()
+        return ""
+
     # ── Paint (Pfeilspitze) ───────────────────────────────────────────────────
 
     def paint(self, painter: QPainter, option, widget=None):
@@ -856,9 +883,10 @@ class ConnectionItem(QGraphicsPathItem):
             painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
             painter.drawText(star_rect, Qt.AlignCenter, "*")
 
-        if self.name:
+        label_text = self._display_name(scene)
+        if label_text:
             mid = path.pointAtPercent(0.5)
-            text = self.name
+            text = label_text
             metrics = QFontMetrics(QFont("Segoe UI", 8, QFont.Bold))
             text_w = metrics.horizontalAdvance(text)
             text_h = max(14, metrics.height())
