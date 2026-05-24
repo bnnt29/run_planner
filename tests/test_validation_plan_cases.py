@@ -15,7 +15,16 @@ Expected file format:
     "2": {"state": "INVALID", "reason_contains": ["bedingungen"]}
   },
   "stations": {
-    "end": {"levels": [0]},
+        "end": {
+            "levels": [0],
+            "witness_paths": [
+                {
+                    "from_root": "start",
+                    "station_path": ["start", "end"],
+                    "edge_path": [1]
+                }
+            ]
+        },
     "dead_end": {"levels": []}
   }
 }
@@ -91,6 +100,7 @@ def _assert_expected_paths(result: dict, expected: dict):
 
 def _assert_expected_stations(result: dict, expected: dict):
     checkpoint_levels = result.get("checkpoint_levels", {})
+    checkpoint_paths = result.get("checkpoint_paths", {})
 
     for station_id, station_expected in expected.get("stations", {}).items():
         expected_levels = station_expected.get("levels", [])
@@ -98,6 +108,13 @@ def _assert_expected_stations(result: dict, expected: dict):
         assert actual_levels == expected_levels, (
             f"Station {station_id}: erwartete Levels {expected_levels}, erhalten {actual_levels}"
         )
+
+        if "witness_paths" in station_expected:
+            expected_paths = station_expected.get("witness_paths", [])
+            actual_paths = checkpoint_paths.get(station_id, [])
+            assert actual_paths == expected_paths, (
+                f"Station {station_id}: erwartete witness_paths {expected_paths}, erhalten {actual_paths}"
+            )
 
 
 @pytest.mark.parametrize("case_name", _collect_case_names())

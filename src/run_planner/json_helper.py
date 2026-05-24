@@ -94,41 +94,21 @@ def _build_stable_validation_snapshot(scene) -> dict | None:
         "target_checkpoint_ids": sorted(list(snapshot.get("target_checkpoint_ids", snapshot.get("checkpoint_ids", [])))),
         "connection_kinds": {key_map[key]: "FLOW" for key in flow_conn_keys if key in key_map},
         "max_depth": int(snapshot.get("max_depth", 2000)),
+        "collect_checkpoint_paths": True,
     }
 
 
-def export_json(window):
-    path = window._choose_file(
-        save=True,
-        title="Konfiguration speichern",
-        default_name="ablaufplan.json",
-        name_filter="JSON-Dateien (*.json)",
-    )
+def _normalize_json_save_path(path: str | None) -> str | None:
     if not path:
-        return
+        return None
     if not path.lower().endswith(".json"):
         path += ".json"
-
-    try:
-        data = _serialize_scene(window)
-
-        with open(path, "w", encoding="utf-8") as f:
-            stdjson.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        QMessageBox.critical(window, "Speichern fehlgeschlagen", f"JSON konnte nicht gespeichert werden:\n{exc}")
-        return
-    window.statusBar().showMessage(f"JSON gespeichert: {path}")
+    return path
 
 
-def export_validation_case(window):
-    path = window._choose_file(
-        save=True,
-        title="Testfall exportieren (Plan + Validierung)",
-        default_name="validation_case.plan.json",
-        name_filter="Plan-Dateien (*.plan.json);;JSON-Dateien (*.json)",
-    )
+def _normalize_test_case_paths(path: str | None) -> tuple[str, str] | None:
     if not path:
-        return
+        return None
 
     base_path = path
     lower = base_path.lower()
@@ -139,8 +119,46 @@ def export_validation_case(window):
     elif lower.endswith(".json"):
         base_path = base_path[: -len(".json")]
 
-    plan_path = f"{base_path}.plan.json"
-    expected_path = f"{base_path}.expected.json"
+    return f"{base_path}.plan.json", f"{base_path}.expected.json"
+
+
+def save_json(window, path: str | None = None, choose_path: bool = False) -> str | None:
+    if choose_path or not path:
+        path = window._choose_file(
+            save=True,
+            title="Konfiguration speichern",
+            default_name="ablaufplan.json",
+            name_filter="JSON-Dateien (*.json)",
+        )
+    path = _normalize_json_save_path(path)
+    if not path:
+        return None
+
+    try:
+        data = _serialize_scene(window)
+
+        with open(path, "w", encoding="utf-8") as f:
+            stdjson.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        QMessageBox.critical(window, "Speichern fehlgeschlagen", f"JSON konnte nicht gespeichert werden:\n{exc}")
+        return None
+    window.statusBar().showMessage(f"JSON gespeichert: {path}")
+    return path
+
+
+def save_validation_case(window, base_path: str | None = None, choose_path: bool = False) -> tuple[str, str] | None:
+    path = base_path
+    if choose_path or not path:
+        path = window._choose_file(
+            save=True,
+            title="Testfall exportieren (Plan + Validierung)",
+            default_name="validation_case.plan.json",
+            name_filter="Plan-Dateien (*.plan.json);;JSON-Dateien (*.json)",
+        )
+    normalized_paths = _normalize_test_case_paths(path)
+    if normalized_paths is None:
+        return None
+    plan_path, expected_path = normalized_paths
 
     try:
         # Export the scene normally (full structure with attributes, stations, connections)
@@ -154,37 +172,86 @@ def export_validation_case(window):
         with open(plan_path, "w", encoding="utf-8") as f:
             stdjson.dump(plan_data, f, ensure_ascii=False, indent=2)
 
-        # Build validation snapshot and compute validation for expected data
-        snapshot = _build_stable_validation_snapshot(window.scene)
-        if snapshot is not None:
-            validation_result = compute_sat_validation(snapshot)
+        # Build the expected data strictly from the scene's current state, so
+        # exports reflect what is actually shown in the editor (incl. markings
+        # loaded from a previous expected file) rather than recomputing SAT.
+        expected_data = _build_expected_payload_from_scene(window.scene)
 
-            paths = {}
-            for conn_key, payload in sorted(validation_result.get("best_states", {}).items()):
-                state = payload[0]
-                paths[str(conn_key)] = {
-                    "state": getattr(state, "name", str(state)),
-                }
-
-            stations = {}
-            checkpoint_levels = validation_result.get("checkpoint_levels", {})
-            for station_id in sorted(snapshot.get("checkpoint_ids", [])):
-                stations[station_id] = {
-                    "levels": list(checkpoint_levels.get(station_id, [])),
-                }
-
-            expected_data = {
-                "paths": paths,
-                "stations": stations,
-            }
-
-            with open(expected_path, "w", encoding="utf-8") as f:
-                stdjson.dump(expected_data, f, ensure_ascii=False, indent=2)
+        with open(expected_path, "w", encoding="utf-8") as f:
+            stdjson.dump(expected_data, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         QMessageBox.critical(window, "Export fehlgeschlagen", f"Testfall konnte nicht exportiert werden:\n{exc}")
-        return
+        return None
 
     window.statusBar().showMessage(f"Testfall exportiert: {plan_path} + {expected_path}")
+    return plan_path, expected_path
+
+
+def export_json(window):
+    return save_json(window, choose_path=True)
+
+
+def export_validation_case(window):
+    return save_validation_case(window, choose_path=True)
+
+
+def _build_expected_payload_from_scene(scene) -> dict:
+    """Build expected.json payload from the scene's currently displayed state.
+
+    This intentionally does NOT re-run SAT validation; it serializes whatever
+    is currently shown in the editor (connection states, reasons, checkpoint
+    levels and witness paths), including markings that were loaded from a
+    previously imported expected file.
+    """
+    try:
+        from .items import STATION_TYPE
+    except ImportError:
+        from .items import STATION_TYPE
+
+    _, StationItem, _, _ = _ui_types()
+
+    stable_conn_map = _stable_flow_conn_map(scene)
+
+    paths: dict[str, dict] = {}
+    for stable_key in sorted(stable_conn_map.keys()):
+        conn = stable_conn_map[stable_key]
+        state = getattr(conn, "_state", None)
+        state_name = getattr(state, "name", None) or "UNKNOWN"
+        entry: dict = {"state": state_name}
+
+        reasons = getattr(conn, "_invalid_reasons", []) or []
+        reason_list = [str(reason) for reason in reasons if isinstance(reason, str)]
+        if reason_list:
+            entry["reason_contains"] = reason_list
+
+        paths[str(stable_key)] = entry
+
+    checkpoint_levels = getattr(scene, "_validation_cache_checkpoint_levels", {}) or {}
+    checkpoint_paths = getattr(scene, "_validation_cache_checkpoint_paths", {}) or {}
+
+    end_station_ids = []
+    for item in scene.items():
+        if not isinstance(item, StationItem):
+            continue
+        station_type = getattr(item, "type", None)
+        is_end = station_type == STATION_TYPE.END or getattr(station_type, "name", "") == "END"
+        if is_end:
+            end_station_ids.append(str(item.node_id))
+
+    stations: dict[str, dict] = {}
+    for station_id in sorted(set(end_station_ids)):
+        station_entry: dict = {
+            "levels": list(checkpoint_levels.get(station_id, [])),
+        }
+        witness_paths = checkpoint_paths.get(station_id, [])
+        if witness_paths:
+            station_entry["witness_paths"] = list(witness_paths)
+        stations[station_id] = station_entry
+
+    return {
+        "paths": paths,
+        "stations": stations,
+    }
 
 
 def _stable_flow_conn_map(scene) -> dict[int, Any]:
@@ -261,11 +328,35 @@ def _apply_expected_markings(window, expected_data: dict):
         best_states_cache[id(conn)] = (state, reasons)
 
     checkpoint_levels_cache = {}
+    checkpoint_paths_cache = {}
     expected_stations = expected_data.get("stations", {}) or {}
     for station_id, payload in expected_stations.items():
         levels = payload.get("levels", []) if isinstance(payload, dict) else []
         if isinstance(levels, list):
             checkpoint_levels_cache[str(station_id)] = list(levels)
+
+        witness_paths = payload.get("witness_paths", []) if isinstance(payload, dict) else []
+        if isinstance(witness_paths, list):
+            normalized_paths = []
+            for witness in witness_paths:
+                if not isinstance(witness, dict):
+                    continue
+                station_path = witness.get("station_path", [])
+                if not isinstance(station_path, list):
+                    continue
+                normalized_station_path = [str(node_id) for node_id in station_path if node_id is not None]
+                if len(normalized_station_path) < 2:
+                    continue
+                normalized_witness = {
+                    "from_root": str(witness.get("from_root", normalized_station_path[0])),
+                    "station_path": normalized_station_path,
+                }
+                edge_path = witness.get("edge_path", [])
+                if isinstance(edge_path, list):
+                    normalized_witness["edge_path"] = list(edge_path)
+                normalized_paths.append(normalized_witness)
+
+            checkpoint_paths_cache[str(station_id)] = normalized_paths
 
     for item in window.scene.items():
         if not isinstance(item, StationItem):
@@ -290,6 +381,7 @@ def _apply_expected_markings(window, expected_data: dict):
 
     window.scene._validation_cache_best_states = best_states_cache
     window.scene._validation_cache_checkpoint_levels = checkpoint_levels_cache
+    window.scene._validation_cache_checkpoint_paths = checkpoint_paths_cache
 
 
 def import_json(
@@ -343,7 +435,10 @@ def import_json(
             QMessageBox.critical(window, "Laden fehlgeschlagen", f"Markierungen konnten nicht angewendet werden:\n{exc}")
             return False
 
-        window.scene.validate_all(force=True)
+        window._loaded_json_path = str(plan_path)
+        window._loaded_test_case_base_path = str(expected_path)[: -len(".expected.json")]
+        if hasattr(window, "_update_save_target_hint"):
+            window._update_save_target_hint()
         window.statusBar().showMessage(f"Testfall geladen: {plan_path} + {expected_path}")
         return True
 
@@ -458,7 +553,15 @@ def import_json(
     if not _skip_validation:
         window.scene.validate_all()
     if expected_applied and expected_path is not None:
+        window._loaded_test_case_base_path = str(expected_path)[: -len(".expected.json")]
         window.statusBar().showMessage(f"Testfall geladen: {path} + {expected_path}")
     else:
+        if lower_path.endswith(".plan.json"):
+            window._loaded_test_case_base_path = str(path)[: -len(".plan.json")]
+        elif lower_path.endswith(".json"):
+            window._loaded_test_case_base_path = None
         window.statusBar().showMessage(f"JSON geladen: {path}")
+    window._loaded_json_path = str(path)
+    if hasattr(window, "_update_save_target_hint"):
+        window._update_save_target_hint()
     return True

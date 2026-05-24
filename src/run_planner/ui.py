@@ -1512,15 +1512,65 @@ class FlowView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    @staticmethod
+    def _extract_dropped_json_paths(mime_data) -> list[str]:
+        if mime_data is None or not mime_data.hasUrls():
+            return []
+        paths = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = str(url.toLocalFile())
+            if path.lower().endswith(".json"):
+                paths.append(path)
+        return paths
+
+    @staticmethod
+    def _preferred_json_drop_path(paths: list[str]) -> str | None:
+        if not paths:
+            return None
+
+        expected = sorted([p for p in paths if p.lower().endswith(".expected.json")])
+        if expected:
+            return expected[0]
+
+        plan = sorted([p for p in paths if p.lower().endswith(".plan.json")])
+        if plan:
+            return plan[0]
+
+        return sorted(paths)[0]
+
     def dragEnterEvent(self, event):
+        dropped_paths = self._extract_dropped_json_paths(event.mimeData())
+        if dropped_paths:
+            event.acceptProposedAction()
+            return
         if event.mimeData().hasText():
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
+        dropped_paths = self._extract_dropped_json_paths(event.mimeData())
+        if dropped_paths:
+            event.acceptProposedAction()
+            return
         if event.mimeData().hasText():
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        dropped_paths = self._extract_dropped_json_paths(event.mimeData())
+        if dropped_paths:
+            preferred_path = self._preferred_json_drop_path(dropped_paths)
+            main_window = self.window()
+            if preferred_path and main_window is not None and hasattr(main_window, "_import_json_path"):
+                loaded = main_window._import_json_path(preferred_path)
+                if loaded:
+                    event.acceptProposedAction()
+                else:
+                    event.ignore()
+            else:
+                event.ignore()
+            return
+
         mime = event.mimeData().text()
         pos  = self.mapToScene(event.pos())
         scene = self.scene()
@@ -1962,6 +2012,7 @@ class MainWindow(QMainWindow):
         self._validation_debug_enabled = False
         self._validation_progress_label = None
         self._validation_debug_label = None
+        self._save_target_hint_label = None
         self._reachability_panel = None
         self._reachability_toggle_btn = None
         self._reachability_header_separator = None
@@ -1976,6 +2027,8 @@ class MainWindow(QMainWindow):
         self._show_attribute_connections = True
         self._show_debug_identifiers_actions = []
         self._show_debug_identifiers = False
+        self._loaded_json_path = None
+        self._loaded_test_case_base_path = None
         self.scene.status_message.connect(self._set_status)
         self.scene.validation_debug.connect(self._set_validation_debug)
         self.scene.validation_state_changed.connect(self._set_validation_action_state)
@@ -1986,6 +2039,7 @@ class MainWindow(QMainWindow):
         self._build_reachability_panel()
         self._build_menu()
         self._build_statusbar()
+        self._update_save_target_hint()
         self._set_validation_action_state(False, False)
         
         # Load JSON file if provided, otherwise create default configuration
@@ -2003,12 +2057,16 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = self.addToolBar("Werkzeuge")
         tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setAllowedAreas(Qt.TopToolBarArea)
         validation_action = None
 
         for text, shortcut, slot in [
             ("Neu",             "Ctrl+N",        self._new),
             ("Laden (JSON)",    "Ctrl+O",        self._import_json),
-            ("Speichern (JSON)","Ctrl+S",        self._export_json),
+            ("Speichern (JSON)","Ctrl+S",        self._save_json),
+            ("Speichern unter (JSON)","Ctrl+Shift+S", self._save_json_as),
+            ("Test speichern",  "Ctrl+Alt+S",    self._save_test_config),
             ("Station",         "Ctrl+1",        self._new_station),
             ("Attribut",        "Ctrl+2",        self._new_attribute),
             ("Validieren",      "F5",            self._trigger_validation),
@@ -2035,142 +2093,71 @@ class MainWindow(QMainWindow):
                 self._validation_toolbar_button.update()
 
         tb.addSeparator()
-        auto_validate_switch = QCheckBox("Auto-Validierung")
-        auto_validate_switch.setChecked(self.scene.auto_validate_enabled)
-        auto_validate_switch.toggled.connect(self._set_auto_validation)
-        auto_validate_switch.setStyleSheet(
-            """
-            QCheckBox {
-                color: #E2E8F0;
-                spacing: 8px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 34px;
-                height: 18px;
-                border-radius: 9px;
-                background: #475569;
-                border: 1px solid #334155;
-            }
-            QCheckBox::indicator:checked {
-                background: #22C55E;
-                border: 1px solid #16A34A;
-            }
-            """
-        )
-        tb.addWidget(auto_validate_switch)
-        self._auto_validation_actions.append(auto_validate_switch)
-
-        validation_debug_switch = QCheckBox("Validierungs-Debug")
-        validation_debug_switch.setChecked(self._validation_debug_enabled)
-        validation_debug_switch.toggled.connect(self._set_validation_debug_enabled)
-        validation_debug_switch.setStyleSheet(
-            """
-            QCheckBox {
-                color: #E2E8F0;
-                spacing: 8px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 34px;
-                height: 18px;
-                border-radius: 9px;
-                background: #475569;
-                border: 1px solid #334155;
-            }
-            QCheckBox::indicator:checked {
-                background: #22C55E;
-                border: 1px solid #16A34A;
-            }
-            """
-        )
-        tb.addWidget(validation_debug_switch)
-        self._validation_debug_actions.append(validation_debug_switch)
-
-        connection_hitboxes_switch = QCheckBox("Verbindungs-Hitboxes deaktivieren")
-        connection_hitboxes_switch.setChecked(self._show_connection_hitboxes)
-        connection_hitboxes_switch.toggled.connect(self._set_show_connection_hitboxes)
-        connection_hitboxes_switch.setStyleSheet(
-            """
-            QCheckBox {
-                color: #E2E8F0;
-                spacing: 8px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 34px;
-                height: 18px;
-                border-radius: 9px;
-                background: #475569;
-                border: 1px solid #334155;
-            }
-            QCheckBox::indicator:checked {
-                background: #22C55E;
-                border: 1px solid #16A34A;
-            }
-            """
-        )
-        tb.addWidget(connection_hitboxes_switch)
-        self._show_connection_hitboxes_actions.append(connection_hitboxes_switch)
-
-        attribute_connections_switch = QCheckBox("ATTRIBUTE-Verbindungen")
-        attribute_connections_switch.setChecked(self._show_attribute_connections)
-        attribute_connections_switch.toggled.connect(self._set_show_attribute_connections)
-        attribute_connections_switch.setStyleSheet(
-            """
-            QCheckBox {
-                color: #E2E8F0;
-                spacing: 8px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 34px;
-                height: 18px;
-                border-radius: 9px;
-                background: #475569;
-                border: 1px solid #334155;
-            }
-            QCheckBox::indicator:checked {
-                background: #22C55E;
-                border: 1px solid #16A34A;
-            }
-            """
-        )
-        tb.addWidget(attribute_connections_switch)
-        self._show_attribute_connections_actions.append(attribute_connections_switch)
-
-        debug_identifiers_switch = QCheckBox("ID-Debug (Station/Pfad)")
-        debug_identifiers_switch.setChecked(self._show_debug_identifiers)
-        debug_identifiers_switch.toggled.connect(self._set_show_debug_identifiers)
-        debug_identifiers_switch.setStyleSheet(
-            """
-            QCheckBox {
-                color: #E2E8F0;
-                spacing: 8px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 34px;
-                height: 18px;
-                border-radius: 9px;
-                background: #475569;
-                border: 1px solid #334155;
-            }
-            QCheckBox::indicator:checked {
-                background: #22C55E;
-                border: 1px solid #16A34A;
-            }
-            """
-        )
-        tb.addWidget(debug_identifiers_switch)
-        self._show_debug_identifiers_actions.append(debug_identifiers_switch)
-
-        tb.addSeparator()
         lbl = QLabel("  Entf = ausgewählte Elemente löschen  │  "
                      "Doppelklick = bearbeiten  │  "
                      "Mausrad = Zoom")
         lbl.setStyleSheet("color:#475569; font-size:11px;")
         tb.addWidget(lbl)
+
+        self.addToolBarBreak(Qt.TopToolBarArea)
+        settings_tb = self.addToolBar("Ansicht & Validierung")
+        settings_tb.setMovable(False)
+        settings_tb.setFloatable(False)
+        settings_tb.setAllowedAreas(Qt.TopToolBarArea)
+
+        toggle_style = """
+            QCheckBox {
+                color: #E2E8F0;
+                spacing: 8px;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 34px;
+                height: 18px;
+                border-radius: 9px;
+                background: #475569;
+                border: 1px solid #334155;
+            }
+            QCheckBox::indicator:checked {
+                background: #22C55E;
+                border: 1px solid #16A34A;
+            }
+            """
+
+        auto_validate_switch = QCheckBox("Auto-Validierung")
+        auto_validate_switch.setChecked(self.scene.auto_validate_enabled)
+        auto_validate_switch.toggled.connect(self._set_auto_validation)
+        auto_validate_switch.setStyleSheet(toggle_style)
+        settings_tb.addWidget(auto_validate_switch)
+        self._auto_validation_actions.append(auto_validate_switch)
+
+        validation_debug_switch = QCheckBox("Validierungs-Debug")
+        validation_debug_switch.setChecked(self._validation_debug_enabled)
+        validation_debug_switch.toggled.connect(self._set_validation_debug_enabled)
+        validation_debug_switch.setStyleSheet(toggle_style)
+        settings_tb.addWidget(validation_debug_switch)
+        self._validation_debug_actions.append(validation_debug_switch)
+
+        connection_hitboxes_switch = QCheckBox("Verbindungs-Hitboxes deaktivieren")
+        connection_hitboxes_switch.setChecked(self._show_connection_hitboxes)
+        connection_hitboxes_switch.toggled.connect(self._set_show_connection_hitboxes)
+        connection_hitboxes_switch.setStyleSheet(toggle_style)
+        settings_tb.addWidget(connection_hitboxes_switch)
+        self._show_connection_hitboxes_actions.append(connection_hitboxes_switch)
+
+        attribute_connections_switch = QCheckBox("ATTRIBUTE-Verbindungen")
+        attribute_connections_switch.setChecked(self._show_attribute_connections)
+        attribute_connections_switch.toggled.connect(self._set_show_attribute_connections)
+        attribute_connections_switch.setStyleSheet(toggle_style)
+        settings_tb.addWidget(attribute_connections_switch)
+        self._show_attribute_connections_actions.append(attribute_connections_switch)
+
+        debug_identifiers_switch = QCheckBox("ID-Debug (Station/Pfad)")
+        debug_identifiers_switch.setChecked(self._show_debug_identifiers)
+        debug_identifiers_switch.toggled.connect(self._set_show_debug_identifiers)
+        debug_identifiers_switch.setStyleSheet(toggle_style)
+        settings_tb.addWidget(debug_identifiers_switch)
+        self._show_debug_identifiers_actions.append(debug_identifiers_switch)
 
     def _build_central(self):
         central = QWidget()
@@ -2206,8 +2193,14 @@ class MainWindow(QMainWindow):
         import_act.triggered.connect(self._import_json)
         fm.addAction(import_act)
         export_json_act = QAction("Speichern (JSON)", self, shortcut="Ctrl+S")
-        export_json_act.triggered.connect(self._export_json)
+        export_json_act.triggered.connect(self._save_json)
         fm.addAction(export_json_act)
+        save_as_json_act = QAction("Speichern unter (JSON)", self, shortcut="Ctrl+Shift+S")
+        save_as_json_act.triggered.connect(self._save_json_as)
+        fm.addAction(save_as_json_act)
+        save_test_act = QAction("Test speichern", self, shortcut="Ctrl+Alt+S")
+        save_test_act.triggered.connect(self._save_test_config)
+        fm.addAction(save_test_act)
         export_validation_case_act = QAction("Als Testfall exportieren (Plan + Validierung)", self)
         export_validation_case_act.triggered.connect(self._export_validation_case)
         fm.addAction(export_validation_case_act)
@@ -2492,6 +2485,55 @@ class MainWindow(QMainWindow):
                 return station
         return None
 
+    def _group_cached_checkpoint_paths(self, selected: StationItem) -> list[tuple[str, list[list[str]]]]:
+        checkpoint_paths = getattr(self.scene, "_validation_cache_checkpoint_paths", {}) or {}
+        if not checkpoint_paths:
+            return []
+
+        selected_id = str(selected.node_id)
+
+        if selected.type == STATION_TYPE.END:
+            grouped_by_root: dict[str, list[list[str]]] = {}
+            for witness in checkpoint_paths.get(selected_id, []) or []:
+                if not isinstance(witness, dict):
+                    continue
+                station_path = witness.get("station_path", [])
+                if not isinstance(station_path, list):
+                    continue
+                normalized_path = [str(station_id) for station_id in station_path if station_id is not None]
+                if len(normalized_path) < 2:
+                    continue
+                from_root = str(witness.get("from_root", normalized_path[0]))
+                grouped_by_root.setdefault(from_root, []).append(normalized_path)
+
+            grouped = list(grouped_by_root.items())
+            grouped.sort(key=lambda item: self._station_name_by_id(item[0]).lower())
+            return grouped
+
+        if selected.type == STATION_TYPE.START:
+            grouped = []
+            for end_id, entries in checkpoint_paths.items():
+                paths_for_start = []
+                for witness in entries or []:
+                    if not isinstance(witness, dict):
+                        continue
+                    station_path = witness.get("station_path", [])
+                    if not isinstance(station_path, list):
+                        continue
+                    normalized_path = [str(station_id) for station_id in station_path if station_id is not None]
+                    if len(normalized_path) < 2:
+                        continue
+                    if normalized_path[0] != selected_id:
+                        continue
+                    paths_for_start.append(normalized_path)
+                if paths_for_start:
+                    grouped.append((str(end_id), paths_for_start))
+
+            grouped.sort(key=lambda item: self._station_name_by_id(item[0]).lower())
+            return grouped
+
+        return []
+
     def _populate_reachability_tree(self, title: str, grouped_paths: list[tuple[str, list[list[str]]]]):
         if self._reachability_tree is None or self._reachability_panel is None:
             return
@@ -2546,6 +2588,13 @@ class MainWindow(QMainWindow):
             return
 
         selected = selected_stations[0]
+        if selected.type in (STATION_TYPE.START, STATION_TYPE.END):
+            cached_grouped = self._group_cached_checkpoint_paths(selected)
+            checkpoint_paths_available = bool(getattr(self.scene, "_validation_cache_checkpoint_paths", {}))
+            if checkpoint_paths_available:
+                self._populate_reachability_tree(selected.name, cached_grouped)
+                return
+
         succs = self._flow_successors_for_reachability()
         if not succs:
             self._set_reachability_header("Traversal-Pfade")
@@ -2593,6 +2642,23 @@ class MainWindow(QMainWindow):
         self._validation_debug_label.setStyleSheet("color:#94A3B8; font-size:10px; padding-right:6px;")
         self._validation_debug_label.setVisible(self._validation_debug_enabled)
         sb.addPermanentWidget(self._validation_debug_label)
+        self._save_target_hint_label = QLabel("")
+        self._save_target_hint_label.setStyleSheet("color:#94A3B8; font-size:10px; padding-left:10px;")
+        sb.addPermanentWidget(self._save_target_hint_label)
+
+    def _update_save_target_hint(self):
+        if self._save_target_hint_label is None:
+            return
+
+        json_target = self._loaded_json_path if self._loaded_json_path else "(nicht gesetzt)"
+        if self._loaded_test_case_base_path:
+            test_target = f"{self._loaded_test_case_base_path}.plan.json + .expected.json"
+        else:
+            test_target = "(nicht gesetzt)"
+
+        self._save_target_hint_label.setText(
+            f"Save-Ziel: {json_target}  |  Test-Ziel: {test_target}"
+        )
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -2720,6 +2786,9 @@ class MainWindow(QMainWindow):
         ) == QMessageBox.Yes:
             self.scene.clear_all()
             self.palette.reset_templates()
+            self._loaded_json_path = None
+            self._loaded_test_case_base_path = None
+            self._update_save_target_hint()
             self._create_start_configuration()
 
     def _connect_ports(self, src_port: Port, dst_port: Port) -> ConnectionItem:
@@ -2804,6 +2873,18 @@ class MainWindow(QMainWindow):
 
     def _choose_file(self, save: bool, title: str, default_name: str, name_filter: str):
         start_dir = os.path.expanduser("~")
+        last_loaded_path = getattr(self, "_loaded_json_path", None)
+        if isinstance(last_loaded_path, str) and last_loaded_path:
+            if os.path.isdir(last_loaded_path):
+                start_dir = last_loaded_path
+            else:
+                parent_dir = os.path.dirname(last_loaded_path)
+                if parent_dir:
+                    start_dir = parent_dir
+        elif isinstance(getattr(self, "_loaded_test_case_base_path", None), str) and self._loaded_test_case_base_path:
+            parent_dir = os.path.dirname(self._loaded_test_case_base_path)
+            if parent_dir:
+                start_dir = parent_dir
         start_path = os.path.join(start_dir, default_name) if default_name else start_dir
         options = QFileDialog.Options()
         if save:
@@ -2820,7 +2901,7 @@ class MainWindow(QMainWindow):
                 start_path,
                 name_filter,
             )    
-        return path or default_name
+        return path
 
     def _on_scene_selection_changed(self):
         selected = self.scene.selectedItems()
@@ -2888,19 +2969,64 @@ class MainWindow(QMainWindow):
     def _port_by_type(item, port_type: str):
         return ConnectionItem._resolve_port(item, port_type)
 
-    def _export_json(self):
+    def _save_json(self):
         import run_planner.json_helper as json_helpers
-        return json_helpers.export_json(self)
+        saved_path = json_helpers.save_json(self, path=self._loaded_json_path, choose_path=False)
+        if saved_path:
+            self._loaded_json_path = saved_path
+        self._update_save_target_hint()
+        return saved_path
+
+    def _save_json_as(self):
+        import run_planner.json_helper as json_helpers
+        saved_path = json_helpers.save_json(self, choose_path=True)
+        if saved_path:
+            self._loaded_json_path = saved_path
+        self._update_save_target_hint()
+        return saved_path
+
+    def _export_json(self):
+        return self._save_json_as()
+
+    def _save_test_config(self):
+        import run_planner.json_helper as json_helpers
+        saved_paths = json_helpers.save_validation_case(
+            self,
+            base_path=self._loaded_test_case_base_path,
+            choose_path=False,
+        )
+        if saved_paths:
+            plan_path, expected_path = saved_paths
+            if plan_path.lower().endswith(".plan.json"):
+                self._loaded_test_case_base_path = plan_path[: -len(".plan.json")]
+            else:
+                self._loaded_test_case_base_path = os.path.splitext(plan_path)[0]
+            self._loaded_json_path = plan_path
+        self._update_save_target_hint()
+        return saved_paths
 
     def _export_validation_case(self):
         import run_planner.json_helper as json_helpers
-        return json_helpers.export_validation_case(self)
+        saved_paths = json_helpers.save_validation_case(self, choose_path=True)
+        if saved_paths:
+            plan_path, expected_path = saved_paths
+            if plan_path.lower().endswith(".plan.json"):
+                self._loaded_test_case_base_path = plan_path[: -len(".plan.json")]
+            else:
+                self._loaded_test_case_base_path = os.path.splitext(plan_path)[0]
+            self._loaded_json_path = plan_path
+        self._update_save_target_hint()
+        return saved_paths
 
     def _import_json(self):
+        return self._import_json_path(None)
+
+    def _import_json_path(self, json_file_path: str | None):
         import run_planner.json_helper as json_helpers
-        loaded = json_helpers.import_json(self)
+        loaded = json_helpers.import_json(self, json_file_path)
         if loaded:
             self._fit_all()
+        self._update_save_target_hint()
         return loaded
 
     def _export_pdf(self):

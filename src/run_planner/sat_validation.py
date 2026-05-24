@@ -474,6 +474,128 @@ def _graph_reachable_from_roots(
 	return seen
 
 
+def _iter_small_container(value):
+	if value is None:
+		return ()
+	if isinstance(value, int):
+		return (value,)
+	return value
+
+
+def _format_witness_paths(path_keys: set[tuple[str, tuple[str, ...], tuple[int, ...]]]) -> list[dict]:
+	formatted = []
+	for from_root, station_path, edge_path in sorted(path_keys, key=lambda item: (item[0], item[1], item[2])):
+		formatted.append(
+			{
+				"from_root": from_root,
+				"station_path": list(station_path),
+				"edge_path": list(edge_path),
+			}
+		)
+	return formatted
+
+
+def _collect_static_checkpoint_paths(
+	flow_succs: dict[str, list[tuple[int, str]]],
+	root_ids: list[str],
+	target_checkpoint_ids: set[str],
+	reachable_nodes: set[str],
+) -> dict[str, list[dict]]:
+	paths_by_checkpoint: dict[str, set[tuple[str, tuple[str, ...], tuple[int, ...]]]] = {
+		checkpoint_id: set() for checkpoint_id in target_checkpoint_ids
+	}
+	sorted_roots = sorted({rid for rid in root_ids if rid in reachable_nodes or rid in target_checkpoint_ids})
+
+	for checkpoint_id in sorted(target_checkpoint_ids):
+		for root_id in sorted_roots:
+			if root_id == checkpoint_id:
+				paths_by_checkpoint[checkpoint_id].add((root_id, (root_id,), ()))
+				continue
+
+			stack: list[tuple[str, tuple[str, ...], tuple[int, ...], frozenset[str]]] = [
+				(root_id, (root_id,), (), frozenset({root_id}))
+			]
+			while stack:
+				node_id, station_path, edge_path, seen = stack.pop()
+				for conn_key, dst_id in sorted(flow_succs.get(node_id, []), key=lambda item: (str(item[1]), int(item[0])), reverse=True):
+					if dst_id not in reachable_nodes and dst_id != checkpoint_id:
+						continue
+					if dst_id in seen:
+						continue
+					next_station_path = station_path + (dst_id,)
+					next_edge_path = edge_path + (int(conn_key),)
+					if dst_id == checkpoint_id:
+						paths_by_checkpoint[checkpoint_id].add((root_id, next_station_path, next_edge_path))
+						continue
+					stack.append((dst_id, next_station_path, next_edge_path, seen | {dst_id}))
+
+	return {
+		checkpoint_id: _format_witness_paths(path_keys)
+		for checkpoint_id, path_keys in paths_by_checkpoint.items()
+		if path_keys
+	}
+
+
+def _collect_state_checkpoint_paths(
+	target_checkpoint_ids: set[str],
+	successful_state_ids_by_checkpoint: dict[str, set[int]],
+	root_state_ids: set[int],
+	predecessor_states: dict[int, int | tuple[int, ...] | list[int]],
+	incoming_edges: dict[int, int | tuple[int, ...] | set[int]],
+	state_station_idx: list[int],
+	station_idx_to_id: list[str],
+) -> dict[str, list[dict]]:
+	paths_by_checkpoint: dict[str, set[tuple[str, tuple[str, ...], tuple[int, ...]]]] = {
+		checkpoint_id: set() for checkpoint_id in target_checkpoint_ids
+	}
+
+	for checkpoint_id in sorted(target_checkpoint_ids):
+		for end_state_id in sorted(successful_state_ids_by_checkpoint.get(checkpoint_id, ())):
+			stack: list[tuple[int, tuple[int, ...], tuple[int, ...], frozenset[int]]] = [
+				(end_state_id, (end_state_id,), (), frozenset({end_state_id}))
+			]
+			while stack:
+				state_id, rev_state_path, rev_edge_path, seen = stack.pop()
+				if state_id in root_state_ids:
+					forward_state_path = tuple(reversed(rev_state_path))
+					station_path = tuple(station_idx_to_id[state_station_idx[sid]] for sid in forward_state_path)
+					edge_path = tuple(reversed(rev_edge_path))
+					if station_path:
+						paths_by_checkpoint[checkpoint_id].add((station_path[0], station_path, edge_path))
+					continue
+
+				pred_ids = sorted(set(_iter_small_container(predecessor_states.get(state_id))))
+				edges = sorted(set(int(edge) for edge in _iter_small_container(incoming_edges.get(state_id))))
+				for pred_state_id in pred_ids:
+					if pred_state_id in seen:
+						continue
+					if edges:
+						for conn_key in edges:
+							stack.append(
+								(
+									pred_state_id,
+									rev_state_path + (pred_state_id,),
+									rev_edge_path + (conn_key,),
+									seen | {pred_state_id},
+								)
+							)
+					else:
+						stack.append(
+							(
+								pred_state_id,
+								rev_state_path + (pred_state_id,),
+								rev_edge_path,
+								seen | {pred_state_id},
+							)
+						)
+
+	return {
+		checkpoint_id: _format_witness_paths(path_keys)
+		for checkpoint_id, path_keys in paths_by_checkpoint.items()
+		if path_keys
+	}
+
+
 def _compute_ruleless_static_validation(
 	station_data: dict,
 	root_ids: list[str],
@@ -482,7 +604,8 @@ def _compute_ruleless_static_validation(
 	target_conn_keys: set[int],
 	checkpoint_ids: set[str],
 	target_checkpoint_ids: set[str],
-) -> tuple[dict[int, tuple[CONNECTION_STATE, list[str]]], dict[str, list[int]], dict[str, int]]:
+	collect_checkpoint_paths: bool = False,
+) -> tuple[dict[int, tuple[CONNECTION_STATE, list[str]]], dict[str, list[int]], dict[str, list[dict]], dict[str, int]]:
 	# Without station rules, attribute state is constant (empty), so condition checks are static.
 	empty_state: dict[str, float] = {}
 	active_succs: dict[str, list[tuple[int, str]]] = {sid: [] for sid in station_data.keys()}
@@ -505,6 +628,7 @@ def _compute_ruleless_static_validation(
 
 	active_reachable = _graph_reachable_from_roots(active_succs, root_ids)
 	active_can_reach_checkpoint = _graph_can_reach_checkpoint(active_succs, checkpoint_ids)
+	active_relevant_nodes = active_reachable & active_can_reach_checkpoint
 
 	success_edges: set[int] = set()
 	for src_id in active_reachable:
@@ -537,12 +661,21 @@ def _compute_ruleless_static_validation(
 		if checkpoint_id in active_reachable:
 			out_checkpoint_levels[checkpoint_id] = [0]
 
+	out_checkpoint_paths: dict[str, list[dict]] = {}
+	if collect_checkpoint_paths:
+		out_checkpoint_paths = _collect_static_checkpoint_paths(
+			flow_succs=active_succs,
+			root_ids=root_ids,
+			target_checkpoint_ids=target_checkpoint_ids,
+			reachable_nodes=active_relevant_nodes | target_checkpoint_ids,
+		)
+
 	profiling = {
 		"state_count": len(active_reachable),
 		"transition_count": sum(len(v) for v in active_succs.values()),
 		"collapsed_conditions": 0,
 	}
-	return best_states, out_checkpoint_levels, profiling
+	return best_states, out_checkpoint_levels, out_checkpoint_paths, profiling
 
 
 def _sanitize_symbol(raw: str) -> str:
@@ -733,6 +866,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	target_conn_keys = set(snapshot.get("target_conn_keys", flow_conn_keys))
 	checkpoint_ids = set(snapshot.get("checkpoint_ids", []))
 	target_checkpoint_ids = set(snapshot.get("target_checkpoint_ids", checkpoint_ids))
+	collect_checkpoint_paths = bool(snapshot.get("collect_checkpoint_paths", False))
 	nusmv_max_workers = snapshot.get("nusmv_max_workers")
 	compile_workers = max(1, int(snapshot.get("compile_workers", _default_parallel_workers(cap=8))))
 	cache_limit = int(snapshot.get("validation_cache_limit", 250000))
@@ -779,6 +913,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		return {
 			"best_states": {},
 			"checkpoint_levels": {},
+			"checkpoint_paths": {},
 			"metrics": {
 				"mode": "nu-smv+state",
 				"total_flow": len(flow_conn_keys),
@@ -792,7 +927,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	if ruleless_mode:
 		_safe_status_emit(status_emit, "Validierung: statische Graph-Analyse ...")
 		_safe_status_emit(status_emit, "Validierung läuft ... SAT-BMC (statischer Modus) ...")
-		best_states, out_checkpoint_levels, static_profiling = _compute_ruleless_static_validation(
+		best_states, out_checkpoint_levels, out_checkpoint_paths, static_profiling = _compute_ruleless_static_validation(
 			station_data=station_data,
 			root_ids=root_ids,
 			flow_succs=flow_succs,
@@ -800,6 +935,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			target_conn_keys=target_conn_keys,
 			checkpoint_ids=checkpoint_ids,
 			target_checkpoint_ids=target_checkpoint_ids,
+			collect_checkpoint_paths=collect_checkpoint_paths,
 		)
 
 		smv_path = _write_nusmv_file(snapshot)
@@ -836,6 +972,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		return {
 			"best_states": best_states,
 			"checkpoint_levels": out_checkpoint_levels,
+			"checkpoint_paths": out_checkpoint_paths,
 			"metrics": {
 				"mode": "nu-smv+static-graph",
 				"total_flow": len(flow_conn_keys),
@@ -1147,9 +1284,11 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	key_to_state_id: dict[tuple[int, int, int], int] = {}
 	dominance_frontier: dict[tuple[int, int], list[int]] = {}
 	predecessor_states: dict[int, int | tuple[int, ...] | list[int]] = {}
-	incoming_target_edges: dict[int, int | tuple[int, ...] | set[int]] = {}
+	incoming_edges: dict[int, int | tuple[int, ...] | set[int]] = {}
+	root_state_ids: set[int] = set()
 	transition_count = 0
 	successful_state_ids: set[int] = set()
+	successful_state_ids_by_checkpoint: dict[str, set[int]] = {checkpoint_id: set() for checkpoint_id in target_checkpoint_ids}
 	state_depth: list[int] = []
 
 	edge_src_reachable: set[int] = set()
@@ -1285,30 +1424,26 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			return (existing,)
 		return existing
 
-	def _append_target_edge(state_id: int, conn_key: int):
-		existing = incoming_target_edges.get(state_id)
+	def _append_incoming_edge(state_id: int, conn_key: int):
+		existing = incoming_edges.get(state_id)
 		if existing is None:
-			incoming_target_edges[state_id] = conn_key
+			incoming_edges[state_id] = conn_key
 			return
 		if isinstance(existing, int):
-			incoming_target_edges[state_id] = (existing, conn_key)
+			incoming_edges[state_id] = (existing, conn_key)
 			return
 		if isinstance(existing, tuple):
 			if len(existing) < 8:
-				incoming_target_edges[state_id] = existing + (conn_key,)
+				incoming_edges[state_id] = existing + (conn_key,)
 			else:
-				incoming_target_edges[state_id] = set(existing)
-				incoming_target_edges[state_id].add(conn_key)
+				expanded_edges = set(existing)
+				expanded_edges.add(conn_key)
+				incoming_edges[state_id] = expanded_edges
 			return
 		existing.add(conn_key)
 
-	def _iter_target_edges(state_id: int):
-		existing = incoming_target_edges.get(state_id)
-		if existing is None:
-			return ()
-		if isinstance(existing, int):
-			return (existing,)
-		return existing
+	def _iter_incoming_edges(state_id: int):
+		return _iter_small_container(incoming_edges.get(state_id))
 
 	def _expand_branch(
 		post_attrs: dict[str, float],
@@ -1320,7 +1455,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		branch_src_reachable: set[int] = set()
 		branch_taken: set[int] = set()
 		branch_condition_failed: set[int] = set()
-		next_candidates: list[tuple[int, str, int, int]] = []
+		next_candidates = []
 
 		for conn_key, dst_id in outgoing_edges:
 			if conn_key in target_conn_keys:
@@ -1435,7 +1570,9 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		return sid
 
 	for root_id in root_ids:
-		_register_state(station_id_to_idx[root_id], 0, 0, 0)
+		root_state_id = _register_state(station_id_to_idx[root_id], 0, 0, 0)
+		if root_state_id >= 0:
+			root_state_ids.add(root_state_id)
 
 	_safe_status_emit(status_emit, "Validierung: Zustandsraum wird analysiert ...")
 	cancelled = False
@@ -1473,6 +1610,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			if state_limit_reached:
 				_safe_status_emit(status_emit, "Validierung: Zustandslimit erreicht, Teilergebnis wird erstellt ...")
 				break
+			if src_state_id is None:
+				continue
 
 			processed_states = len(state_depth) - pending_state_count
 			now = time.perf_counter()
@@ -1518,6 +1657,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			station_idx = state_station_idx[src_state_id]
 			attrs_id = state_attrs_id[src_state_id]
 			counters_id = state_counters_id[src_state_id]
+			current_state_id = src_state_id
 			station_id = station_idx_to_id[station_idx]
 			attrs = attrs_dict_cache.get(attrs_id)
 			if attrs is None:
@@ -1539,6 +1679,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				successful_state_ids.add(src_state_id)
 				if station_id in checkpoint_levels:
 					checkpoint_levels[station_id].add(0)
+				if station_id in successful_state_ids_by_checkpoint:
+					successful_state_ids_by_checkpoint[station_id].add(src_state_id)
 
 			eligible = _get_eligible_rules(station_id, attrs_key, attrs)
 			enabled = []
@@ -1628,7 +1770,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 			seen_branch_payloads: dict[tuple[int, int], int] = {}
 			post_attrs_obj_cache: dict[int, int] = {}
 			station_payload_relevant_attrs = station_relevant_attrs_by_idx[station_idx]
-			skipped_no_rule_candidates: list[tuple[tuple[int, int, int], tuple[int, str, dict, int, int, int]]] = []
+			skipped_no_rule_candidates = []
 			for post_attrs, post_counters_id, rule_global_idx, rule_collapsed_by_conn in branch_effects:
 				obj_id = id(post_attrs)
 				post_attrs_id = post_attrs_obj_cache.get(obj_id)
@@ -1674,7 +1816,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 				edge_condition_failed.update(branch_condition_failed)
 
 				seen_next_candidates: set[tuple[int, int, int, int]] = set()
-				candidates_list: list[tuple[tuple[int, int, int], tuple[int, int, dict, int, int, bool]]] = []
+				candidates_list = []
 				# Collect candidates first, apply budgeted pruning/sorting below.
 				for item in next_candidates:
 					# support both old and new tuple shapes for safety
@@ -1779,9 +1921,8 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 					dst_state_id = _register_state(dst_station_idx, dst_attrs_id, post_counters_id, depth + 1)
 					if dst_state_id < 0:
 						continue
-					_append_predecessor(dst_state_id, src_state_id)
-					if conn_key in target_conn_keys:
-						_append_target_edge(dst_state_id, conn_key)
+					_append_predecessor(dst_state_id, current_state_id)
+					_append_incoming_edge(dst_state_id, conn_key)
 					transition_count += 1
 					branch_enqueues_allowed += 1
 
@@ -1851,12 +1992,25 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 		rev_seen = set(successful_state_ids)
 		while rev_queue:
 			state_id = rev_queue.popleft()
-			for conn_key in _iter_target_edges(state_id):
-				success_edges.add(conn_key)
+			for conn_key in _iter_incoming_edges(state_id):
+				if conn_key in target_conn_keys:
+					success_edges.add(conn_key)
 			for pred_state_id in _iter_predecessors(state_id):
 				if pred_state_id not in rev_seen:
 					rev_seen.add(pred_state_id)
 					rev_queue.append(pred_state_id)
+
+	out_checkpoint_paths: dict[str, list[dict]] = {}
+	if collect_checkpoint_paths and successful_state_ids:
+		out_checkpoint_paths = _collect_state_checkpoint_paths(
+			target_checkpoint_ids=target_checkpoint_ids,
+			successful_state_ids_by_checkpoint=successful_state_ids_by_checkpoint,
+			root_state_ids=root_state_ids,
+			predecessor_states=predecessor_states,
+			incoming_edges=incoming_edges,
+			state_station_idx=state_station_idx,
+			station_idx_to_id=station_idx_to_id,
+		)
 
 	# Drop large temporary state-space structures before final classification.
 	queue.clear()
@@ -1871,8 +2025,10 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	key_to_state_id.clear()
 	dominance_frontier.clear()
 	predecessor_states.clear()
-	incoming_target_edges.clear()
+	incoming_edges.clear()
+	root_state_ids.clear()
 	successful_state_ids.clear()
+	successful_state_ids_by_checkpoint.clear()
 	attrs_dict_cache.clear()
 	counters_dict_cache.clear()
 	conn_condition_cache.clear()
@@ -1950,6 +2106,7 @@ def compute_sat_validation(snapshot: dict, cancel_event=None, status_emit=None) 
 	return {
 		"best_states": best_states,
 		"checkpoint_levels": out_checkpoint_levels,
+		"checkpoint_paths": out_checkpoint_paths,
 		"metrics": {
 			"mode": "nu-smv+state",
 			"total_flow": len(flow_conn_keys),

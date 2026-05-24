@@ -645,6 +645,7 @@ class TestCoreValidationLogic:
         assert isinstance(result, dict)
         assert "best_states" in result
         assert "checkpoint_levels" in result
+        assert "checkpoint_paths" in result
         assert "metrics" in result
         assert result["best_states"] == {}
 
@@ -689,6 +690,83 @@ class TestCoreValidationLogic:
         assert state == CONNECTION_STATE.VALID
         assert isinstance(reasons, list)
         assert len(reasons) > 0
+        assert result["checkpoint_paths"] == {}
+
+    def test_ruleless_static_graph_collects_all_checkpoint_paths(self):
+        """Static mode should emit all simple witness paths when requested."""
+        snapshot = {
+            "station_data": {
+                "start": {"rules": []},
+                "a": {"rules": []},
+                "b": {"rules": []},
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [1, 2, 3, 4],
+            "target_conn_keys": [1, 2, 3, 4],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {
+                "start": [(1, "a"), (2, "b")],
+                "a": [(3, "end")],
+                "b": [(4, "end")],
+            },
+            "flow_conn_conditions": {},
+            "connection_kinds": {1: "FLOW", 2: "FLOW", 3: "FLOW", 4: "FLOW"},
+            "collect_checkpoint_paths": True,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert "end" in result["checkpoint_paths"]
+        assert result["checkpoint_paths"]["end"] == [
+            {
+                "from_root": "start",
+                "station_path": ["start", "a", "end"],
+                "edge_path": [1, 3],
+            },
+            {
+                "from_root": "start",
+                "station_path": ["start", "b", "end"],
+                "edge_path": [2, 4],
+            },
+        ]
+
+    def test_state_mode_collects_checkpoint_paths(self):
+        """State mode should include witness paths when requested."""
+        snapshot = {
+            "station_data": {
+                "start": {
+                    "rules": [
+                        {
+                            "conditions": [],
+                            "effects": [],
+                        }
+                    ]
+                },
+                "end": {"rules": []},
+            },
+            "root_ids": ["start"],
+            "flow_conn_keys": [10],
+            "target_conn_keys": [10],
+            "checkpoint_ids": ["end"],
+            "target_checkpoint_ids": ["end"],
+            "flow_succs": {"start": [(10, "end")]},
+            "flow_conn_conditions": {10: []},
+            "connection_kinds": {10: "FLOW"},
+            "collect_checkpoint_paths": True,
+        }
+
+        result = compute_sat_validation(snapshot)
+
+        assert result["metrics"]["mode"] == "nu-smv+state"
+        assert result["checkpoint_paths"]["end"] == [
+            {
+                "from_root": "start",
+                "station_path": ["start", "end"],
+                "edge_path": [10],
+            }
+        ]
 
     def test_ruleless_static_graph_mode_handles_large_chain(self):
         """Ruleless graphs should use the static fast path and still classify paths correctly."""
@@ -2059,6 +2137,7 @@ class TestLogicErrorDetection:
         # Check structure
         assert "best_states" in result
         assert "checkpoint_levels" in result
+        assert "checkpoint_paths" in result
         assert "metrics" in result
 
         # Check best_states structure

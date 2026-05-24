@@ -51,6 +51,7 @@ class FlowScene(QGraphicsScene):
         self.validation_profiling_enabled = False
         self._validation_cache_best_states = {}
         self._validation_cache_checkpoint_levels = {}
+        self._validation_cache_checkpoint_paths = {}
         self.validation_result_ready.connect(self._apply_validation_result)
 
     def _emit_validation_state(self):
@@ -802,20 +803,32 @@ class FlowScene(QGraphicsScene):
             connection_kinds = meta.get("connection_kinds", {})
             target_conn_keys = set(meta.get("target_conn_keys", []))
             target_checkpoint_ids = set(meta.get("target_checkpoint_ids", []))
-            
+
             best_states = dict(self._validation_cache_best_states)
             # Inkrementelle Läufe müssen betroffene Keys zuerst invalidieren,
             # sonst bleiben alte Zustände beim "Zurückändern" hängen.
             for conn_key in target_conn_keys:
                 best_states.pop(conn_key, None)
             best_states.update(result.get("best_states", {}))
+
             checkpoint_levels = dict(self._validation_cache_checkpoint_levels)
             for checkpoint_id in target_checkpoint_ids:
                 checkpoint_levels.pop(checkpoint_id, None)
-
             checkpoint_levels.update(result.get("checkpoint_levels", {}))
+
+            # BUGFIX: defensiver Fallback für Test-Doubles/ältere Objekte ohne dieses Attribut
+            existing_checkpoint_paths = getattr(self, "_validation_cache_checkpoint_paths", {})
+            if not isinstance(existing_checkpoint_paths, dict):
+                existing_checkpoint_paths = {}
+
+            checkpoint_paths = dict(existing_checkpoint_paths)
+            for checkpoint_id in target_checkpoint_ids:
+                checkpoint_paths.pop(checkpoint_id, None)
+            checkpoint_paths.update(result.get("checkpoint_paths", {}))
+
             self._validation_cache_best_states = best_states
             self._validation_cache_checkpoint_levels = checkpoint_levels
+            self._validation_cache_checkpoint_paths = checkpoint_paths
 
             for item in self.selectedItems():
                 if isinstance(item, ConnectionItem):
@@ -962,6 +975,7 @@ class FlowScene(QGraphicsScene):
         self._queued_validation = None
         self._validation_cache_best_states = {}
         self._validation_cache_checkpoint_levels = {}
+        self._validation_cache_checkpoint_paths = {}
         self._emit_validation_state()
         self.clear()
 

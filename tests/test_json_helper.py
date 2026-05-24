@@ -7,6 +7,7 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from run_planner import json_helper
+from run_planner.items import CONNECTION_STATE
 
 
 class _FakePos:
@@ -122,6 +123,7 @@ class _FakeScene:
         self.rebuilt = False
         self.unique_calls = []
         self._validation_cache_best_states = {1: True}
+        self._validation_cache_checkpoint_paths = {}
         self.auto_validate_enabled = True
 
     def items(self):
@@ -170,8 +172,12 @@ class _FakeWindow:
         self.palette = SimpleNamespace(reset_templates=Mock())
         self._status_bar = _FakeStatusBar()
         self._chosen_path = chosen_path
+        self._loaded_json_path = None
+        self._loaded_test_case_base_path = None
+        self.choose_calls = 0
 
     def _choose_file(self, save, title, default_name, name_filter):
+        self.choose_calls += 1
         return self._chosen_path
 
     def statusBar(self):
@@ -225,41 +231,38 @@ def test_import_json_recreates_items_and_links(tmp_path, monkeypatch):
     assert scene.validated is True
     assert window.palette.reset_templates.called
     assert window.statusBar().messages[-1].startswith("JSON geladen:")
+    assert window._loaded_json_path == str(json_path)
+    assert window._loaded_test_case_base_path is None
 
 
 def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     attr = _FakeAttribute()
-    station = _FakeStation(attr=attr)
+    station_a = _FakeStation(node_id="station-a", name="A", attr=attr)
+    station_b = _FakeStation(node_id="station-b", name="B")
+    station_b.type = SimpleNamespace(value=1, name="END")
     text = _FakeTextBlock("Info")
-    connection = _FakeConnection(attr.out_port, station.attr_port, payload={"kind": "flow", "src": "a", "dst": "b"})
-    scene = _FakeScene([attr, station, text], [connection])
-    scene._build_validation_snapshot = Mock(
-        return_value=(
+    connection = _FakeConnection(station_a.out_port, station_b.in_port, payload={"kind": "flow", "src": "a", "dst": "b"})
+    connection._state = SimpleNamespace(name="VALID")
+    connection._invalid_reasons = ["ok"]
+    scene = _FakeScene([attr, station_a, station_b, text], [connection])
+    scene._validation_cache_checkpoint_levels = {"station-b": [0]}
+    scene._validation_cache_checkpoint_paths = {
+        "station-b": [
             {
-                "station_data": {"start": {"rules": []}, "end": {"rules": []}},
-                "root_ids": ["start"],
-                "checkpoint_ids": ["end"],
-                "flow_succs": {"start": [(99, "end")], "end": []},
-                "flow_conn_conditions": {99: []},
-                "flow_conn_keys": [99],
-                "target_conn_keys": [99],
-                "target_checkpoint_ids": ["end"],
-                "max_depth": 8,
-            },
-            {},
-        )
-    )
+                "from_root": "station-a",
+                "station_path": ["station-a", "station-b"],
+                "edge_path": [1],
+            }
+        ],
+    }
     window = _FakeWindow(scene, str(tmp_path / "my_case.plan.json"))
 
     monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
-    monkeypatch.setattr(
-        json_helper,
-        "compute_sat_validation",
-        lambda snapshot: {
-            "best_states": {10: (SimpleNamespace(name="VALID"), ["ok"])},
-            "checkpoint_levels": {"end": [0]},
-        },
-    )
+
+    def _fail_compute(_snapshot):
+        raise AssertionError("save_validation_case must not recompute SAT validation")
+
+    monkeypatch.setattr(json_helper, "compute_sat_validation", _fail_compute)
 
     json_helper.export_validation_case(window)
 
@@ -277,9 +280,71 @@ def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     assert "connections" in plan_data
     assert "version" in plan_data
     assert "paths" in expected_data
-    assert expected_data["paths"]["10"]["state"] == "VALID"
-    assert expected_data["stations"]["end"]["levels"] == [0]
+    assert expected_data["paths"]["1"]["state"] == "VALID"
+    assert expected_data["paths"]["1"]["reason_contains"] == ["ok"]
+    assert expected_data["stations"]["station-b"]["levels"] == [0]
+    assert expected_data["stations"]["station-b"]["witness_paths"][0]["edge_path"] == [1]
     assert window.statusBar().messages[-1].startswith("Testfall exportiert:")
+
+
+def test_save_json_uses_existing_path_without_file_dialog(tmp_path, monkeypatch):
+    attr = _FakeAttribute()
+    station = _FakeStation(attr=attr)
+    text = _FakeTextBlock("Info")
+    scene = _FakeScene([attr, station, text], [])
+    window = _FakeWindow(scene, str(tmp_path / "ignored.json"))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    target_path = str(tmp_path / "direct_save.json")
+    saved = json_helper.save_json(window, path=target_path, choose_path=False)
+
+    assert saved == target_path
+    assert (tmp_path / "direct_save.json").exists()
+    assert window.choose_calls == 0
+
+
+def test_save_validation_case_uses_existing_base_without_file_dialog(tmp_path, monkeypatch):
+    attr = _FakeAttribute()
+    station = _FakeStation(attr=attr)
+    text = _FakeTextBlock("Info")
+    scene = _FakeScene([attr, station, text], [])
+    scene._build_validation_snapshot = Mock(
+        return_value=(
+            {
+                "station_data": {"start": {"rules": []}, "end": {"rules": []}},
+                "root_ids": ["start"],
+                "checkpoint_ids": ["end"],
+                "flow_succs": {"start": [(99, "end")], "end": []},
+                "flow_conn_conditions": {99: []},
+                "flow_conn_keys": [99],
+                "target_conn_keys": [99],
+                "target_checkpoint_ids": ["end"],
+                "max_depth": 8,
+            },
+            {},
+        )
+    )
+    window = _FakeWindow(scene, str(tmp_path / "ignored.plan.json"))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+    monkeypatch.setattr(
+        json_helper,
+        "compute_sat_validation",
+        lambda snapshot: {
+            "best_states": {10: (SimpleNamespace(name="VALID"), ["ok"])},
+            "checkpoint_levels": {"end": [0]},
+            "checkpoint_paths": {},
+        },
+    )
+
+    base_path = str(tmp_path / "saved_case")
+    saved_paths = json_helper.save_validation_case(window, base_path=base_path, choose_path=False)
+
+    assert saved_paths == (f"{base_path}.plan.json", f"{base_path}.expected.json")
+    assert (tmp_path / "saved_case.plan.json").exists()
+    assert (tmp_path / "saved_case.expected.json").exists()
+    assert window.choose_calls == 0
 
 
 
@@ -302,6 +367,7 @@ def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypa
     expected_path.write_text(json.dumps(expected_data), encoding="utf-8")
 
     scene = _FakeScene()
+    scene.auto_validate_enabled = False
     window = _FakeWindow(scene, str(expected_path))
 
     apply_mock = Mock()
@@ -312,8 +378,103 @@ def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypa
 
     assert ok is True
     apply_mock.assert_called_once()
-    assert scene.validated is True  # validate_all is called after applying markings
+    assert scene.validated is False
     assert window.statusBar().messages[-1].startswith("Testfall geladen:")
+    assert window._loaded_json_path == str(plan_path)
+    assert window._loaded_test_case_base_path == str(expected_path)[: -len(".expected.json")]
+
+
+def test_import_expected_json_does_not_trigger_validation_with_auto_enabled(tmp_path, monkeypatch):
+    plan_data = {
+        "attributes": [{"node_id": "attr-1", "name": "Attr", "x": 1, "y": 2}],
+        "stations": [{"node_id": "station-1", "name": "Station", "x": 3, "y": 4, "rules": []}],
+        "textblocks": [],
+        "connections": [],
+    }
+    expected_data = {
+        "paths": {"1": {"state": "VALID"}},
+        "stations": {"station-1": {"levels": [0]}},
+    }
+
+    plan_path = tmp_path / "case_auto.plan.json"
+    expected_path = tmp_path / "case_auto.expected.json"
+    plan_path.write_text(json.dumps(plan_data), encoding="utf-8")
+    expected_path.write_text(json.dumps(expected_data), encoding="utf-8")
+
+    scene = _FakeScene()
+    scene.auto_validate_enabled = True
+    window = _FakeWindow(scene, str(expected_path))
+
+    apply_mock = Mock()
+    monkeypatch.setattr(json_helper, "_apply_expected_markings", apply_mock)
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    ok = json_helper.import_json(window, str(expected_path))
+
+    assert ok is True
+    apply_mock.assert_called_once()
+    assert scene.validated is False
+    assert window.statusBar().messages[-1].startswith("Testfall geladen:")
+    assert window._loaded_json_path == str(plan_path)
+    assert window._loaded_test_case_base_path == str(expected_path)[: -len(".expected.json")]
+
+
+def test_import_expected_json_keeps_connection_state_marking(tmp_path, monkeypatch):
+    plan_data = {
+        "attributes": [],
+        "stations": [
+            {"node_id": "station-1", "name": "A", "x": 0, "y": 0, "rules": []},
+            {"node_id": "station-2", "name": "B", "x": 100, "y": 0, "rules": []},
+        ],
+        "textblocks": [],
+        "connections": [
+            {
+                "src_node_id": "station-1",
+                "src_port_type": "output",
+                "dst_node_id": "station-2",
+                "dst_port_type": "input",
+                "name": "",
+                "conditions": [],
+            }
+        ],
+    }
+    expected_data = {
+        "paths": {"1": {"state": "VALID"}},
+        "stations": {
+            "station-2": {
+                "levels": [0],
+                "witness_paths": [
+                    {
+                        "from_root": "station-1",
+                        "station_path": ["station-1", "station-2"],
+                        "edge_path": [1],
+                    }
+                ],
+            }
+        },
+    }
+
+    plan_path = tmp_path / "case_marked.plan.json"
+    expected_path = tmp_path / "case_marked.expected.json"
+    plan_path.write_text(json.dumps(plan_data), encoding="utf-8")
+    expected_path.write_text(json.dumps(expected_data), encoding="utf-8")
+
+    scene = _FakeScene()
+    scene.auto_validate_enabled = True
+    window = _FakeWindow(scene, str(expected_path))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    ok = json_helper.import_json(window, str(expected_path))
+
+    assert ok is True
+    assert scene.validated is False
+    assert len(scene._connections) == 1
+    assert scene._connections[0]._state == CONNECTION_STATE.VALID
+    cached = scene._validation_cache_best_states.get(id(scene._connections[0]))
+    assert cached is not None
+    assert cached[0] == CONNECTION_STATE.VALID
+    assert scene._validation_cache_checkpoint_paths["station-2"][0]["station_path"] == ["station-1", "station-2"]
 
 
 def test_import_plan_autoloads_expected_when_auto_validation_disabled(tmp_path, monkeypatch):
@@ -357,3 +518,62 @@ def test_import_plan_autoloads_expected_when_auto_validation_disabled(tmp_path, 
     assert window.statusBar().messages[-1].startswith("Testfall geladen:")
     assert scene.validated is False  # validate_all is no-op when auto validation is disabled
     assert scene._validation_cache_best_states
+    assert window._loaded_json_path == str(plan_path)
+    assert window._loaded_test_case_base_path == str(expected_path)[: -len(".expected.json")]
+
+
+def test_import_plan_sets_test_base_path_for_save_test_without_expected(tmp_path, monkeypatch):
+    plan_data = {
+        "attributes": [{"node_id": "attr-1", "name": "Attr", "x": 1, "y": 2}],
+        "stations": [{"node_id": "station-1", "name": "Station", "x": 3, "y": 4, "rules": []}],
+        "textblocks": [],
+        "connections": [],
+    }
+    plan_path = tmp_path / "case.plan.json"
+    plan_path.write_text(json.dumps(plan_data), encoding="utf-8")
+
+    scene = _FakeScene()
+    window = _FakeWindow(scene, str(plan_path))
+    scene._build_validation_snapshot = Mock(
+        return_value=(
+            {
+                "station_data": {"start": {"rules": []}, "end": {"rules": []}},
+                "root_ids": ["start"],
+                "checkpoint_ids": ["end"],
+                "flow_succs": {"start": [(99, "end")], "end": []},
+                "flow_conn_conditions": {99: []},
+                "flow_conn_keys": [99],
+                "target_conn_keys": [99],
+                "target_checkpoint_ids": ["end"],
+                "max_depth": 8,
+            },
+            {},
+        )
+    )
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+    monkeypatch.setattr(
+        json_helper,
+        "compute_sat_validation",
+        lambda snapshot: {
+            "best_states": {10: (SimpleNamespace(name="VALID"), ["ok"])},
+            "checkpoint_levels": {"end": [0]},
+            "checkpoint_paths": {},
+        },
+    )
+
+    ok = json_helper.import_json(window, str(plan_path))
+    assert ok is True
+    assert window._loaded_test_case_base_path == str(plan_path)[: -len(".plan.json")]
+
+    choose_calls_before_save = window.choose_calls
+    saved_paths = json_helper.save_validation_case(
+        window,
+        base_path=window._loaded_test_case_base_path,
+        choose_path=False,
+    )
+    assert saved_paths == (
+        f"{window._loaded_test_case_base_path}.plan.json",
+        f"{window._loaded_test_case_base_path}.expected.json",
+    )
+    assert window.choose_calls == choose_calls_before_save
