@@ -226,8 +226,20 @@ def _build_expected_payload_from_scene(scene) -> dict:
 
         paths[str(stable_key)] = entry
 
-    checkpoint_levels = getattr(scene, "_validation_cache_checkpoint_levels", {}) or {}
-    checkpoint_paths = getattr(scene, "_validation_cache_checkpoint_paths", {}) or {}
+    checkpoint_levels_raw = getattr(scene, "_validation_cache_checkpoint_levels", {}) or {}
+    checkpoint_paths_raw = getattr(scene, "_validation_cache_checkpoint_paths", {}) or {}
+
+    # Normalize cache keys to strings so station-id lookups are stable even if
+    # upstream code mixed id types.
+    checkpoint_levels = {
+        str(station_id): list(levels) if isinstance(levels, list) else []
+        for station_id, levels in checkpoint_levels_raw.items()
+    }
+    checkpoint_paths = {
+        str(station_id): paths if isinstance(paths, list) else []
+        for station_id, paths in checkpoint_paths_raw.items()
+    }
+    derived_checkpoint_paths = _derive_witness_paths_from_scene(scene, stable_conn_map)
 
     end_station_ids = []
     for item in scene.items():
@@ -243,15 +255,135 @@ def _build_expected_payload_from_scene(scene) -> dict:
         station_entry: dict = {
             "levels": list(checkpoint_levels.get(station_id, [])),
         }
-        witness_paths = checkpoint_paths.get(station_id, [])
-        if witness_paths:
-            station_entry["witness_paths"] = list(witness_paths)
+
+        normalized_witness_paths = []
+        source_witness_paths = checkpoint_paths.get(station_id, []) or derived_checkpoint_paths.get(station_id, [])
+        for witness in source_witness_paths:
+            if not isinstance(witness, dict):
+                continue
+            station_path = witness.get("station_path", [])
+            if not isinstance(station_path, list):
+                continue
+            normalized_station_path = [str(node_id) for node_id in station_path if node_id is not None]
+            if len(normalized_station_path) < 2:
+                continue
+
+            witness_entry = {
+                "from_root": str(witness.get("from_root", normalized_station_path[0])),
+                "station_path": normalized_station_path,
+            }
+
+            edge_path = witness.get("edge_path", [])
+            if isinstance(edge_path, list):
+                witness_entry["edge_path"] = list(edge_path)
+
+            normalized_witness_paths.append(witness_entry)
+
+        if normalized_witness_paths:
+            station_entry["witness_paths"] = normalized_witness_paths
         stations[station_id] = station_entry
 
     return {
         "paths": paths,
         "stations": stations,
     }
+
+
+def _derive_witness_paths_from_scene(scene, stable_conn_map: dict[int, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Derive witness paths from current FLOW graph as export fallback.
+
+    This is used when checkpoint-path cache is empty/incomplete, but the editor
+    still has a valid graph that can show reachability paths.
+    """
+    try:
+        from .items import STATION_TYPE
+    except ImportError:
+        from .items import STATION_TYPE
+
+    _, StationItem, _, _ = _ui_types()
+
+    runtime_to_stable = {id(conn): stable_key for stable_key, conn in stable_conn_map.items()}
+
+    succs: dict[str, list[tuple[str, int]]] = {}
+    for conn in scene._connections:
+        kind = scene._connection_kind(conn)
+        kind_name = getattr(kind, "name", str(kind)).upper()
+        if kind_name != "FLOW":
+            continue
+
+        src = conn.src_port.parentItem() if conn.src_port else None
+        dst = conn.dst_port.parentItem() if conn.dst_port else None
+        if not isinstance(src, StationItem) or not isinstance(dst, StationItem):
+            continue
+
+        stable_key = runtime_to_stable.get(id(conn))
+        if stable_key is None:
+            continue
+
+        src_id = str(src.node_id)
+        dst_id = str(dst.node_id)
+        succs.setdefault(src_id, []).append((dst_id, int(stable_key)))
+
+    for src_id in list(succs.keys()):
+        succs[src_id].sort(key=lambda item: (item[0], item[1]))
+
+    start_ids: list[str] = []
+    end_ids: set[str] = set()
+    for item in scene.items():
+        if not isinstance(item, StationItem):
+            continue
+        station_type = getattr(item, "type", None)
+        if station_type == STATION_TYPE.START or getattr(station_type, "name", "") == "START":
+            start_ids.append(str(item.node_id))
+        if station_type == STATION_TYPE.END or getattr(station_type, "name", "") == "END":
+            end_ids.add(str(item.node_id))
+
+    if not start_ids or not end_ids:
+        return {}
+
+    max_depth = max(10, len(succs) * 3)
+    max_paths_per_checkpoint = 500
+    paths_by_checkpoint: dict[str, list[dict[str, Any]]] = {checkpoint_id: [] for checkpoint_id in end_ids}
+
+    for start_id in sorted(set(start_ids)):
+        stack: list[tuple[str, list[str], list[int]]] = [(start_id, [start_id], [])]
+        while stack:
+            node_id, station_path, edge_path = stack.pop()
+            if len(station_path) >= max_depth:
+                continue
+
+            for dst_id, stable_key in reversed(succs.get(node_id, [])):
+                if dst_id in station_path:
+                    continue
+                next_station_path = station_path + [dst_id]
+                next_edge_path = edge_path + [stable_key]
+
+                if dst_id in end_ids and len(next_station_path) >= 2:
+                    if len(paths_by_checkpoint[dst_id]) < max_paths_per_checkpoint:
+                        paths_by_checkpoint[dst_id].append(
+                            {
+                                "from_root": start_id,
+                                "station_path": next_station_path,
+                                "edge_path": next_edge_path,
+                            }
+                        )
+
+                stack.append((dst_id, next_station_path, next_edge_path))
+
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for checkpoint_id, entries in paths_by_checkpoint.items():
+        if not entries:
+            continue
+        entries.sort(
+            key=lambda witness: (
+                str(witness.get("from_root", "")),
+                tuple(str(node_id) for node_id in witness.get("station_path", [])),
+                tuple(int(edge_id) for edge_id in witness.get("edge_path", [])),
+            )
+        )
+        normalized[checkpoint_id] = entries
+
+    return normalized
 
 
 def _stable_flow_conn_map(scene) -> dict[int, Any]:
@@ -528,6 +660,19 @@ def import_json(
 
     for item in touched_items:
         window.scene.update_connections_for(item)
+
+    # Final reshape: Beim Laden werden Station-Layouts beim sukzessiven
+    # Anlegen weiterer Verbindungen ggf. neu berechnet (z. B. Port-Positionen).
+    # Damit alle Pfade ihre endgültige Form annehmen, hier einmal komplett
+    # neu zeichnen.
+    for item in window.scene.items():
+        if isinstance(item, (StationItem, AttributeItem)) and hasattr(item, "_layout"):
+            item._layout()
+    for conn in window.scene._connections:
+        try:
+            conn.update_path()
+        except Exception:
+            pass
 
     if hasattr(window.scene, "rebuild_note_links"):
         window.scene.rebuild_note_links()

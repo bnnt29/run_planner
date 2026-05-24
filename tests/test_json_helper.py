@@ -287,6 +287,38 @@ def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     assert window.statusBar().messages[-1].startswith("Testfall exportiert:")
 
 
+def test_export_validation_case_derives_witness_paths_when_cache_missing(tmp_path, monkeypatch):
+    station_a = _FakeStation(node_id="station-a", name="A")
+    station_a.type = SimpleNamespace(value=0, name="START")
+    station_b = _FakeStation(node_id="station-b", name="B")
+    station_b.type = SimpleNamespace(value=2, name="END")
+
+    connection = _FakeConnection(
+        station_a.out_port,
+        station_b.in_port,
+        payload={"kind": "flow", "src": "station-a", "dst": "station-b"},
+    )
+    connection._state = SimpleNamespace(name="VALID")
+
+    scene = _FakeScene([station_a, station_b], [connection])
+    scene._validation_cache_checkpoint_levels = {"station-b": [0]}
+    scene._validation_cache_checkpoint_paths = {}
+    window = _FakeWindow(scene, str(tmp_path / "derived_case.plan.json"))
+
+    monkeypatch.setattr(json_helper, "_ui_types", lambda: (_FakeAttribute, _FakeStation, _FakeTextBlock, _FakeConnection))
+
+    json_helper.export_validation_case(window)
+
+    expected_path = tmp_path / "derived_case.expected.json"
+    expected_data = json.loads(expected_path.read_text(encoding="utf-8"))
+
+    witness_paths = expected_data["stations"]["station-b"].get("witness_paths", [])
+    assert witness_paths
+    assert witness_paths[0]["from_root"] == "station-a"
+    assert witness_paths[0]["station_path"] == ["station-a", "station-b"]
+    assert witness_paths[0]["edge_path"] == [1]
+
+
 def test_save_json_uses_existing_path_without_file_dialog(tmp_path, monkeypatch):
     attr = _FakeAttribute()
     station = _FakeStation(attr=attr)

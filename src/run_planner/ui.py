@@ -836,6 +836,9 @@ class FlowScene(ValidationFlowScene):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSceneRect(-5000, -5000, 10000, 10000)
+        self._scene_rect_margin = 1500.0
+        self._scene_rect_grow_step = 2000.0
+        self.changed.connect(self._maybe_grow_scene_rect)
         self._connections: list[ConnectionItem] = []
         self._wip_conn:    ConnectionItem | None = None
         self._wip_src:     Port | None           = None
@@ -1328,6 +1331,35 @@ class FlowScene(ValidationFlowScene):
     def clear_all(self):
         self._note_links.clear()
         super().clear_all()
+        self.setSceneRect(-5000, -5000, 10000, 10000)
+
+    def _maybe_grow_scene_rect(self, _regions=None):
+        items_rect = self.itemsBoundingRect()
+        if items_rect.isEmpty():
+            return
+        current = self.sceneRect()
+        margin = self._scene_rect_margin
+        step = self._scene_rect_grow_step
+
+        new_left = current.left()
+        new_top = current.top()
+        new_right = current.right()
+        new_bottom = current.bottom()
+        grew = False
+        if items_rect.left() - margin < new_left:
+            new_left = items_rect.left() - margin - step
+            grew = True
+        if items_rect.top() - margin < new_top:
+            new_top = items_rect.top() - margin - step
+            grew = True
+        if items_rect.right() + margin > new_right:
+            new_right = items_rect.right() + margin + step
+            grew = True
+        if items_rect.bottom() + margin > new_bottom:
+            new_bottom = items_rect.bottom() + margin + step
+            grew = True
+        if grew:
+            self.setSceneRect(new_left, new_top, new_right - new_left, new_bottom - new_top)
 
     def update_connections_for(self, item):
         if item is None:
@@ -2029,6 +2061,7 @@ class MainWindow(QMainWindow):
         self._show_debug_identifiers = False
         self._loaded_json_path = None
         self._loaded_test_case_base_path = None
+        self._clipboard_data = None
         self.scene.status_message.connect(self._set_status)
         self.scene.validation_debug.connect(self._set_validation_debug)
         self.scene.validation_state_changed.connect(self._set_validation_action_state)
@@ -2223,6 +2256,14 @@ class MainWindow(QMainWindow):
         del_act = QAction("Ausgewählte löschen", self, shortcut="Del")
         del_act.triggered.connect(self._delete_selected)
         em.addAction(del_act)
+
+        copy_act = QAction("Auswahl kopieren", self, shortcut="Ctrl+C")
+        copy_act.triggered.connect(self._copy_selected)
+        em.addAction(copy_act)
+
+        paste_act = QAction("Einfügen", self, shortcut="Ctrl+V")
+        paste_act.triggered.connect(self._paste_clipboard)
+        em.addAction(paste_act)
 
         add_station = QAction("Station anlegen", self, shortcut="Ctrl+1")
         add_station.triggered.connect(self._new_station)
@@ -2870,6 +2911,151 @@ class MainWindow(QMainWindow):
     def _delete_selected(self):
         ev = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier)
         self.scene.keyPressEvent(ev)
+
+    def _copy_selected(self):
+        selected_stations = [
+            it for it in self.scene.selectedItems() if isinstance(it, StationItem)
+        ]
+        selected_attributes = [
+            it for it in self.scene.selectedItems() if isinstance(it, AttributeItem)
+        ]
+        if not selected_stations and not selected_attributes:
+            self._set_status("Keine Stationen/Attribute zum Kopieren ausgewählt.")
+            return
+
+        selected_ids = {s.node_id for s in selected_stations}
+        selected_ids.update(a.node_id for a in selected_attributes)
+
+        station_payloads = [s.to_json() for s in selected_stations]
+        attribute_payloads = [a.to_json() for a in selected_attributes]
+
+        connection_payloads = []
+        for conn in list(self.scene._connections):
+            src_item = conn.src_port.parentItem() if conn.src_port else None
+            dst_item = conn.dst_port.parentItem() if conn.dst_port else None
+            src_id = getattr(src_item, "node_id", None)
+            dst_id = getattr(dst_item, "node_id", None)
+            if src_id in selected_ids and dst_id in selected_ids:
+                connection_payloads.append(conn.to_json())
+
+        # Anchor point = top-left of selection bounding rect (scene coords).
+        all_items = selected_stations + selected_attributes
+        xs = [float(it.pos().x()) for it in all_items]
+        ys = [float(it.pos().y()) for it in all_items]
+        anchor = [min(xs), min(ys)] if xs and ys else [0.0, 0.0]
+
+        self._clipboard_data = {
+            "stations": station_payloads,
+            "attributes": attribute_payloads,
+            "connections": connection_payloads,
+            "anchor": anchor,
+        }
+        self._set_status(
+            f"{len(station_payloads)} Station(en), {len(attribute_payloads)} Attribut(e) und "
+            f"{len(connection_payloads)} Verbindung(en) kopiert."
+        )
+
+    def _paste_clipboard(self):
+        data = self._clipboard_data
+        if not data or (not data.get("stations") and not data.get("attributes")):
+            self._set_status("Zwischenablage ist leer.")
+            return
+
+        import uuid as _uuid
+
+        # Build node_map containing existing items (so rules referring to
+        # existing attributes still resolve after paste).
+        node_map = {}
+        for item in self.scene.items():
+            node_id = getattr(item, "node_id", None)
+            if node_id:
+                node_map[node_id] = item
+
+        # Compute paste offset: move selection anchor to the current view center.
+        anchor = data.get("anchor", [0.0, 0.0])
+        view_center = self.view.mapToScene(self.view.viewport().rect().center())
+        offset_x = float(view_center.x()) - float(anchor[0])
+        offset_y = float(view_center.y()) - float(anchor[1])
+
+        id_map = {}  # old node_id -> new node_id
+
+        # 1) Attribute zuerst einfügen, damit Stations-Rules sie referenzieren
+        # können.
+        new_attributes = []
+        for attr_data in data.get("attributes", []):
+            payload = dict(attr_data)
+            old_id = payload.get("node_id")
+            new_id = _uuid.uuid4().hex
+            payload["node_id"] = new_id
+            payload.pop("template_id", None)
+            payload["x"] = float(payload.get("x", 0.0)) + offset_x
+            payload["y"] = float(payload.get("y", 0.0)) + offset_y
+            attribute = AttributeItem.from_json(payload)
+            attribute.name = self.scene.make_unique_attribute_name(attribute.name)
+            self.scene.addItem(attribute)
+            self.scene._register_template(attribute)
+            # node_map ist nach dem Schlüssel der ALTEN ID indiziert, damit
+            # StationItem.from_json die referenzierten Attribute korrekt
+            # auflöst, ohne die Stations-Payload modifizieren zu müssen.
+            node_map[old_id] = attribute
+            node_map[new_id] = attribute
+            if old_id:
+                id_map[old_id] = new_id
+            new_attributes.append(attribute)
+
+        # 2) Stationen erstellen.
+        new_stations = []
+        for station_data in data.get("stations", []):
+            payload = dict(station_data)
+            old_id = payload.get("node_id")
+            new_id = _uuid.uuid4().hex
+            payload["node_id"] = new_id
+            payload.pop("template_id", None)
+            payload["x"] = float(payload.get("x", 0.0)) + offset_x
+            payload["y"] = float(payload.get("y", 0.0)) + offset_y
+            station = StationItem.from_json(payload, node_map)
+            if station is None:
+                continue
+            self.scene.addItem(station)
+            self.scene._register_template(station)
+            node_map[new_id] = station
+            if old_id:
+                id_map[old_id] = new_id
+            new_stations.append(station)
+
+        # 3) Verbindungen (Flow + Attribut) neu aufbauen.
+        new_connections = []
+        for conn_data in data.get("connections", []):
+            payload = dict(conn_data)
+            src_old = payload.get("src_node_id")
+            dst_old = payload.get("dst_node_id")
+            if src_old not in id_map or dst_old not in id_map:
+                continue
+            payload["src_node_id"] = id_map[src_old]
+            payload["dst_node_id"] = id_map[dst_old]
+            conn = ConnectionItem.from_json(payload, node_map)
+            if conn is None:
+                continue
+            self.scene.addItem(conn)
+            self.scene._connections.append(conn)
+            new_connections.append(conn)
+
+        if not new_stations and not new_attributes:
+            self._set_status("Einfügen fehlgeschlagen.")
+            return
+
+        self.scene.clearSelection()
+        for it in new_stations + new_attributes:
+            it.setSelected(True)
+            self.scene.update_connections_for(it)
+
+        self.scene.validate_all(
+            changed_targets=new_stations + new_attributes + new_connections
+        )
+        self._set_status(
+            f"{len(new_stations)} Station(en), {len(new_attributes)} Attribut(e) und "
+            f"{len(new_connections)} Verbindung(en) eingefügt."
+        )
 
     def _choose_file(self, save: bool, title: str, default_name: str, name_filter: str):
         start_dir = os.path.expanduser("~")
