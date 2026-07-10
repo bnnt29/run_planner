@@ -16,7 +16,7 @@ Expected file format:
   },
   "stations": {
         "end": {
-            "levels": [0],
+            "level": 1,
             "witness_paths": [
                 {
                     "from_root": "start",
@@ -25,7 +25,7 @@ Expected file format:
                 }
             ]
         },
-    "dead_end": {"levels": []}
+    "dead_end": {"level": -1}
   }
 }
 """
@@ -103,7 +103,19 @@ def _assert_expected_stations(result: dict, expected: dict):
     checkpoint_paths = result.get("checkpoint_paths", {})
 
     for station_id, station_expected in expected.get("stations", {}).items():
-        expected_levels = station_expected.get("levels", [])
+        if "level" in station_expected:
+            try:
+                expected_level = int(station_expected.get("level", -1))
+            except Exception:
+                expected_level = -1
+            if expected_level == 1:
+                expected_levels = [0]
+            elif expected_level == 0:
+                expected_levels = [1]
+            else:
+                expected_levels = []
+        else:
+            expected_levels = station_expected.get("levels", [])
         actual_levels = checkpoint_levels.get(station_id, [])
         assert actual_levels == expected_levels, (
             f"Station {station_id}: erwartete Levels {expected_levels}, erhalten {actual_levels}"

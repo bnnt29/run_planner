@@ -1,14 +1,14 @@
 End station:
-    if at least one connection is valid:
+    if at least one connection is valid and at least one station condition is valid:
         End valid (green)
-    if at least one connection is conditional valid and there are no other valid connections:
+    if at least one connection is conditional valid and there are no other valid connections and at least one station condition is conditional valid:
         End conditional valid (yellow)
     else:
         End invalid (white)
 
 path:
     has no condition:
-        path is traversed at least once :
+        path is traversed at least once:
             valid
         path is never traversed:
             invalid
@@ -27,5 +27,5 @@ traversal:
     station:
         only traverse following paths if at least one condition is valid
     path:
-        only go into following station if the condition is valid (if one is present, else traverse to the following state evrytime)
+        only validate following stations to Valid if the condition is valid (green) else validate following stations to conditional valid (yellow)(if one is present, else traverse and validate the following station everytime)
             

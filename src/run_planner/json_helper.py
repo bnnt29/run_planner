@@ -239,7 +239,6 @@ def _build_expected_payload_from_scene(scene) -> dict:
         str(station_id): paths if isinstance(paths, list) else []
         for station_id, paths in checkpoint_paths_raw.items()
     }
-    derived_checkpoint_paths = _derive_witness_paths_from_scene(scene, stable_conn_map)
 
     end_station_ids = []
     for item in scene.items():
@@ -252,12 +251,16 @@ def _build_expected_payload_from_scene(scene) -> dict:
 
     stations: dict[str, dict] = {}
     for station_id in sorted(set(end_station_ids)):
+        raw_levels = checkpoint_levels.get(station_id, [])
         station_entry: dict = {
-            "levels": list(checkpoint_levels.get(station_id, [])),
+            "level": _encode_expected_level(raw_levels),
         }
 
         normalized_witness_paths = []
-        source_witness_paths = checkpoint_paths.get(station_id, []) or derived_checkpoint_paths.get(station_id, [])
+        # Strictly use the witness paths currently held by the scene (i.e. what
+        # is shown on the board). Do NOT regenerate via graph traversal here –
+        # the export must reflect the board state 1:1.
+        source_witness_paths = checkpoint_paths.get(station_id, [])
         for witness in source_witness_paths:
             if not isinstance(witness, dict):
                 continue
@@ -279,14 +282,67 @@ def _build_expected_payload_from_scene(scene) -> dict:
 
             normalized_witness_paths.append(witness_entry)
 
-        if normalized_witness_paths:
-            station_entry["witness_paths"] = normalized_witness_paths
+        # Always emit witness_paths (possibly empty) so the export mirrors the
+        # current board state exactly.
+        station_entry["witness_paths"] = normalized_witness_paths
         stations[station_id] = station_entry
 
     return {
         "paths": paths,
         "stations": stations,
     }
+
+
+def _encode_expected_level(levels: list[Any]) -> int:
+    """Map internal checkpoint levels to expected.json single-level format.
+
+    Expected format:
+    -1 => white (unreachable)
+     0 => orange
+     1 => green
+    """
+    if not isinstance(levels, list) or not levels:
+        return -1
+    try:
+        best_level = min(int(level) for level in levels)
+    except Exception:
+        return -1
+    if best_level == 0:
+        return 1
+    if best_level == 1:
+        return 0
+    return -1
+
+
+def _decode_expected_level_to_levels(station_payload: dict) -> list[int]:
+    """Decode expected.json station level into internal checkpoint-level list.
+
+    Supports both the new format (`level`: int) and legacy (`levels`: list).
+    """
+    if not isinstance(station_payload, dict):
+        return []
+
+    if "level" in station_payload:
+        try:
+            level_value = int(station_payload.get("level", -1))
+        except Exception:
+            level_value = -1
+        if level_value == 1:
+            return [0]
+        if level_value == 0:
+            return [1]
+        return []
+
+    levels = station_payload.get("levels", [])
+    if isinstance(levels, list):
+        # Legacy format compatibility: only the first array element is used.
+        if not levels:
+            return []
+        try:
+            return [int(levels[0])]
+        except Exception:
+            return []
+    return []
 
 
 def _derive_witness_paths_from_scene(scene, stable_conn_map: dict[int, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -461,11 +517,31 @@ def _apply_expected_markings(window, expected_data: dict):
 
     checkpoint_levels_cache = {}
     checkpoint_paths_cache = {}
+
+    # Build the set of station IDs that actually exist in the current scene
+    # and the set of stable FLOW edge keys, so we can discard expected entries
+    # that reference stations/edges which no longer exist on the board.
+    existing_station_ids: set[str] = set()
+    existing_end_station_ids: set[str] = set()
+    for item in window.scene.items():
+        if not isinstance(item, StationItem):
+            continue
+        station_id_str = str(item.node_id)
+        existing_station_ids.add(station_id_str)
+        station_type = getattr(item, "type", None)
+        is_end = station_type == STATION_TYPE.END or getattr(station_type, "name", "") == "END"
+        if is_end:
+            existing_end_station_ids.add(station_id_str)
+    existing_edge_keys: set[int] = set(stable_conn_map.keys())
+
     expected_stations = expected_data.get("stations", {}) or {}
     for station_id, payload in expected_stations.items():
-        levels = payload.get("levels", []) if isinstance(payload, dict) else []
-        if isinstance(levels, list):
-            checkpoint_levels_cache[str(station_id)] = list(levels)
+        station_id_str = str(station_id)
+        # Discard entries that reference stations which do not exist on the
+        # board, or that exist but are not END stations.
+        if station_id_str not in existing_end_station_ids:
+            continue
+        checkpoint_levels_cache[station_id_str] = _decode_expected_level_to_levels(payload if isinstance(payload, dict) else {})
 
         witness_paths = payload.get("witness_paths", []) if isinstance(payload, dict) else []
         if isinstance(witness_paths, list):
@@ -479,16 +555,27 @@ def _apply_expected_markings(window, expected_data: dict):
                 normalized_station_path = [str(node_id) for node_id in station_path if node_id is not None]
                 if len(normalized_station_path) < 2:
                     continue
+                # Discard witness paths that reference stations not present on
+                # the board.
+                if any(node_id not in existing_station_ids for node_id in normalized_station_path):
+                    continue
                 normalized_witness = {
                     "from_root": str(witness.get("from_root", normalized_station_path[0])),
                     "station_path": normalized_station_path,
                 }
                 edge_path = witness.get("edge_path", [])
                 if isinstance(edge_path, list):
-                    normalized_witness["edge_path"] = list(edge_path)
+                    try:
+                        edge_path_ints = [int(edge_id) for edge_id in edge_path]
+                    except (TypeError, ValueError):
+                        continue
+                    # Discard witness paths whose edges no longer exist.
+                    if any(edge_id not in existing_edge_keys for edge_id in edge_path_ints):
+                        continue
+                    normalized_witness["edge_path"] = edge_path_ints
                 normalized_paths.append(normalized_witness)
 
-            checkpoint_paths_cache[str(station_id)] = normalized_paths
+            checkpoint_paths_cache[station_id_str] = normalized_paths
 
     for item in window.scene.items():
         if not isinstance(item, StationItem):
@@ -504,7 +591,7 @@ def _apply_expected_markings(window, expected_data: dict):
             if best_level == 0:
                 item.end_badge_text_color = QColor("#22C55E")
             elif best_level == 1:
-                item.end_badge_text_color = QColor("#3B82F6")
+                item.end_badge_text_color = QColor("#E7F708")
             else:
                 item.end_badge_text_color = QColor("#FFFFFF")
         else:

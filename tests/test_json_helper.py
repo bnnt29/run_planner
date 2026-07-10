@@ -282,12 +282,12 @@ def test_export_validation_case_writes_plan_and_expected(tmp_path, monkeypatch):
     assert "paths" in expected_data
     assert expected_data["paths"]["1"]["state"] == "VALID"
     assert expected_data["paths"]["1"]["reason_contains"] == ["ok"]
-    assert expected_data["stations"]["station-b"]["levels"] == [0]
+    assert expected_data["stations"]["station-b"]["level"] == 1
     assert expected_data["stations"]["station-b"]["witness_paths"][0]["edge_path"] == [1]
     assert window.statusBar().messages[-1].startswith("Testfall exportiert:")
 
 
-def test_export_validation_case_derives_witness_paths_when_cache_missing(tmp_path, monkeypatch):
+def test_export_validation_case_does_not_derive_witness_paths_when_cache_missing(tmp_path, monkeypatch):
     station_a = _FakeStation(node_id="station-a", name="A")
     station_a.type = SimpleNamespace(value=0, name="START")
     station_b = _FakeStation(node_id="station-b", name="B")
@@ -312,11 +312,10 @@ def test_export_validation_case_derives_witness_paths_when_cache_missing(tmp_pat
     expected_path = tmp_path / "derived_case.expected.json"
     expected_data = json.loads(expected_path.read_text(encoding="utf-8"))
 
+    # Export must strictly mirror the board state – with no cached witness
+    # paths, the export must NOT regenerate them via graph traversal.
     witness_paths = expected_data["stations"]["station-b"].get("witness_paths", [])
-    assert witness_paths
-    assert witness_paths[0]["from_root"] == "station-a"
-    assert witness_paths[0]["station_path"] == ["station-a", "station-b"]
-    assert witness_paths[0]["edge_path"] == [1]
+    assert witness_paths == []
 
 
 def test_save_json_uses_existing_path_without_file_dialog(tmp_path, monkeypatch):
@@ -390,7 +389,7 @@ def test_import_expected_json_loads_plan_and_applies_markings(tmp_path, monkeypa
     }
     expected_data = {
         "paths": {"1": {"state": "VALID"}},
-        "stations": {"station-1": {"levels": [0]}},
+        "stations": {"station-1": {"level": 1}},
     }
 
     plan_path = tmp_path / "case.plan.json"
@@ -425,7 +424,7 @@ def test_import_expected_json_does_not_trigger_validation_with_auto_enabled(tmp_
     }
     expected_data = {
         "paths": {"1": {"state": "VALID"}},
-        "stations": {"station-1": {"levels": [0]}},
+        "stations": {"station-1": {"level": 1}},
     }
 
     plan_path = tmp_path / "case_auto.plan.json"
@@ -474,7 +473,7 @@ def test_import_expected_json_keeps_connection_state_marking(tmp_path, monkeypat
         "paths": {"1": {"state": "VALID"}},
         "stations": {
             "station-2": {
-                "levels": [0],
+                "level": 1,
                 "witness_paths": [
                     {
                         "from_root": "station-1",

@@ -1,13 +1,13 @@
 {
   "paths": {
     "1": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "2": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -25,13 +25,13 @@
       ]
     },
     "5": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "6": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -49,13 +49,13 @@
       ]
     },
     "9": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "10": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -73,7 +73,7 @@
       ]
     },
     "13": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -85,7 +85,7 @@
       ]
     },
     "15": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -97,13 +97,13 @@
       ]
     },
     "17": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "18": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -133,7 +133,7 @@
       ]
     },
     "23": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -163,25 +163,25 @@
       ]
     },
     "28": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "29": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "30": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "31": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -205,7 +205,7 @@
       ]
     },
     "35": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -217,19 +217,19 @@
       ]
     },
     "37": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "38": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "39": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -241,19 +241,19 @@
       ]
     },
     "41": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "42": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "43": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -265,19 +265,19 @@
       ]
     },
     "45": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "46": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "47": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -289,13 +289,13 @@
       ]
     },
     "49": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "50": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -313,13 +313,13 @@
       ]
     },
     "53": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "54": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -331,25 +331,25 @@
       ]
     },
     "56": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "57": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "58": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "59": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -367,13 +367,13 @@
       ]
     },
     "62": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "63": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -385,13 +385,13 @@
       ]
     },
     "65": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "66": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -403,25 +403,25 @@
       ]
     },
     "68": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "69": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "70": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "71": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -439,7 +439,7 @@
       ]
     },
     "74": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -457,19 +457,19 @@
       ]
     },
     "77": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "78": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "79": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -493,19 +493,19 @@
       ]
     },
     "83": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "84": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "85": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -541,7 +541,7 @@
       ]
     },
     "91": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -553,13 +553,13 @@
       ]
     },
     "93": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "94": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -571,7 +571,7 @@
       ]
     },
     "96": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -583,7 +583,7 @@
       ]
     },
     "98": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -595,13 +595,13 @@
       ]
     },
     "100": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "101": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -613,19 +613,19 @@
       ]
     },
     "103": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "104": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "105": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -637,19 +637,19 @@
       ]
     },
     "107": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "108": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "109": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -661,25 +661,25 @@
       ]
     },
     "111": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "112": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "113": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "114": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -691,37 +691,37 @@
       ]
     },
     "116": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "117": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "118": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "119": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "120": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "121": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -733,25 +733,25 @@
       ]
     },
     "123": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "124": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "125": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "126": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -775,13 +775,13 @@
       ]
     },
     "130": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "131": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -793,7 +793,7 @@
       ]
     },
     "133": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -805,7 +805,7 @@
       ]
     },
     "135": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -853,19 +853,19 @@
       ]
     },
     "143": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "144": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "145": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -877,19 +877,19 @@
       ]
     },
     "147": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "148": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "149": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -901,13 +901,13 @@
       ]
     },
     "151": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "152": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -925,7 +925,7 @@
       ]
     },
     "155": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -937,13 +937,13 @@
       ]
     },
     "157": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "158": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -961,19 +961,19 @@
       ]
     },
     "161": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "162": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "163": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1003,19 +1003,19 @@
       ]
     },
     "168": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "169": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "170": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -1027,13 +1027,13 @@
       ]
     },
     "172": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "173": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -1057,19 +1057,19 @@
       ]
     },
     "177": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "178": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "179": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -1081,7 +1081,7 @@
       ]
     },
     "181": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -1105,7 +1105,7 @@
       ]
     },
     "185": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -1117,7 +1117,7 @@
       ]
     },
     "187": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1129,7 +1129,7 @@
       ]
     },
     "189": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1153,19 +1153,19 @@
       ]
     },
     "193": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "194": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "195": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1183,7 +1183,7 @@
       ]
     },
     "198": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1195,7 +1195,7 @@
       ]
     },
     "200": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1207,13 +1207,13 @@
       ]
     },
     "202": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "203": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
@@ -1237,7 +1237,7 @@
       ]
     },
     "207": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1249,7 +1249,7 @@
       ]
     },
     "209": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -1261,19 +1261,19 @@
       ]
     },
     "211": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
     },
     "212": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "213": {
-      "state": "VALID",
+      "state": "INVALID",
       "reason_contains": [
         "Die Verbindung liegt auf einem gültigen Pfad von Start zu Endstation."
       ]
@@ -1297,7 +1297,7 @@
       ]
     },
     "217": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1321,7 +1321,7 @@
       ]
     },
     "221": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1333,13 +1333,13 @@
       ]
     },
     "223": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
     },
     "224": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -1363,13 +1363,13 @@
       ]
     },
     "228": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "229": {
-      "state": "INVALID",
+      "state": "CONDITIONAL_INVALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
@@ -1393,7 +1393,7 @@
       ]
     },
     "233": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Keine erreichbare Route von einer Startstation zum Quellknoten dieser Verbindung."
       ]
@@ -1411,25 +1411,25 @@
       ]
     },
     "236": {
-      "state": "INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Bedingungen der Verbindung sind in den erreichbaren Zuständen nicht erfüllbar."
       ]
     },
     "237": {
-      "state": "CONDITIONAL_INVALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist erreichbar, führt jedoch in keiner verfolgten Konfiguration zu einer Endstation."
       ]
     },
     "238": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
     },
     "239": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -1441,7 +1441,7 @@
       ]
     },
     "241": {
-      "state": "CONDITIONAL_VALID",
+      "state": "VALID",
       "reason_contains": [
         "Die Verbindung ist auf mindestens einem gültigen Pfad erreichbar (bedingungenabhängig)."
       ]
@@ -1467,7 +1467,7 @@
   },
   "stations": {
     "043eb98bc2184e9d90d2cb77c92de88c": {
-      "levels": [],
+      "level": 0,
       "witness_paths": [
         {
           "from_root": "285c763e6f004a109a9c9b14b855e3fd",
@@ -1494,7 +1494,7 @@
       ]
     },
     "06e310944bf04a34804adbc94cc7116c": {
-      "levels": [],
+      "level": -1,
       "witness_paths": [
         {
           "from_root": "18bdd6ec0f294d5da7077f6ef45a3182",
@@ -1517,23 +1517,11 @@
             29,
             77
           ]
-        },
-        {
-          "from_root": "56fee24cdac247d3bd4c4b2abfe6310e",
-          "station_path": [
-            "56fee24cdac247d3bd4c4b2abfe6310e",
-            "06e310944bf04a34804adbc94cc7116c"
-          ],
-          "edge_path": [
-            77
-          ]
         }
       ]
     },
     "0773cd7649834d66b1233f647320140e": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "a8dcb11f46f3464c87d771a352fce7da",
@@ -1570,75 +1558,15 @@
       ]
     },
     "0b469747000342bbaea2f70ddb6d7903": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "25d501bb77164584badf786dbf59880e",
-          "station_path": [
-            "25d501bb77164584badf786dbf59880e",
-            "0b469747000342bbaea2f70ddb6d7903"
-          ],
-          "edge_path": [
-            40
-          ]
-        },
-        {
-          "from_root": "a742253e0a4c4cd5b4996877ef88f55e",
-          "station_path": [
-            "a742253e0a4c4cd5b4996877ef88f55e",
-            "25d501bb77164584badf786dbf59880e",
-            "0b469747000342bbaea2f70ddb6d7903"
-          ],
-          "edge_path": [
-            163,
-            40
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "0d99062277ff4b6b81ebb78e9041c4d9": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "0ca2feb32af2438384da65f707a51f6c",
-          "station_path": [
-            "0ca2feb32af2438384da65f707a51f6c",
-            "0d99062277ff4b6b81ebb78e9041c4d9"
-          ],
-          "edge_path": [
-            13
-          ]
-        },
-        {
-          "from_root": "0ca2feb32af2438384da65f707a51f6c",
-          "station_path": [
-            "0ca2feb32af2438384da65f707a51f6c",
-            "7439c003771341a1afc00f0d6493b4e3",
-            "0d99062277ff4b6b81ebb78e9041c4d9"
-          ],
-          "edge_path": [
-            14,
-            102
-          ]
-        },
-        {
-          "from_root": "7439c003771341a1afc00f0d6493b4e3",
-          "station_path": [
-            "7439c003771341a1afc00f0d6493b4e3",
-            "0d99062277ff4b6b81ebb78e9041c4d9"
-          ],
-          "edge_path": [
-            102
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "0e3a8f46b1bd49548d49f4139e65b09d": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "04dec05cab0440418f2c917fd7a6e902",
@@ -1665,7 +1593,7 @@
       ]
     },
     "0f37dc3907254780ae67f8d0a20e8208": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "067a06c5bf334408844c29c916a01afe",
@@ -1676,64 +1604,15 @@
           "edge_path": [
             9
           ]
-        },
-        {
-          "from_root": "14a8eb78c02545999ab56944f76cb1e5",
-          "station_path": [
-            "14a8eb78c02545999ab56944f76cb1e5",
-            "067a06c5bf334408844c29c916a01afe",
-            "0f37dc3907254780ae67f8d0a20e8208"
-          ],
-          "edge_path": [
-            23,
-            9
-          ]
         }
       ]
     },
     "11d5d9730f6340e998ad8c82dacae67e": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "7e31ab24173f4aafb674a77a00ecdcbd",
-          "station_path": [
-            "7e31ab24173f4aafb674a77a00ecdcbd",
-            "11d5d9730f6340e998ad8c82dacae67e"
-          ],
-          "edge_path": [
-            111
-          ]
-        },
-        {
-          "from_root": "7e31ab24173f4aafb674a77a00ecdcbd",
-          "station_path": [
-            "7e31ab24173f4aafb674a77a00ecdcbd",
-            "7e49b895af1e4e45870b60c5093279cc",
-            "11d5d9730f6340e998ad8c82dacae67e"
-          ],
-          "edge_path": [
-            112,
-            113
-          ]
-        },
-        {
-          "from_root": "7e49b895af1e4e45870b60c5093279cc",
-          "station_path": [
-            "7e49b895af1e4e45870b60c5093279cc",
-            "11d5d9730f6340e998ad8c82dacae67e"
-          ],
-          "edge_path": [
-            113
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "12682ab418d54947af93219db767602c": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0198bd2848084065aa83503407ece6b4",
@@ -1746,34 +1625,12 @@
             3,
             106
           ]
-        },
-        {
-          "from_root": "7926ce9ba6e040338b41bdd57f4e3e96",
-          "station_path": [
-            "7926ce9ba6e040338b41bdd57f4e3e96",
-            "12682ab418d54947af93219db767602c"
-          ],
-          "edge_path": [
-            106
-          ]
         }
       ]
     },
     "1320362db8754d268d0886753f837f26": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "c9d58484286f4f3bb90cf0355db9a808",
-          "station_path": [
-            "c9d58484286f4f3bb90cf0355db9a808",
-            "1320362db8754d268d0886753f837f26"
-          ],
-          "edge_path": [
-            191
-          ]
-        },
         {
           "from_root": "f469bd7554df45c0b82cc8ab0bd4197e",
           "station_path": [
@@ -1799,9 +1656,7 @@
       ]
     },
     "18ef98bb307249a087f464e2dec3b1b1": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "a48e4fc0fade496e8f84f05403a15e57",
@@ -1838,9 +1693,7 @@
       ]
     },
     "1b0b76887899474dac31356f7ae4b35b": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "a7c9685a941c4bd09c079a2bf811d129",
@@ -1867,7 +1720,7 @@
       ]
     },
     "1e65b2602b9541a79e9a10ec1f399463": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "edde7ea00a8549629d6f22b284bc01f1",
@@ -1894,9 +1747,7 @@
       ]
     },
     "219b3f88059a449fb6e3fb5cf90deeac": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "8901b73be51f4db1ba0d37fe3986b81e",
@@ -1933,20 +1784,8 @@
       ]
     },
     "23bdb1ccef0c47b48e214eda819507ba": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "3e6452ea51634d8283cf8b3b5c232f3a",
-          "station_path": [
-            "3e6452ea51634d8283cf8b3b5c232f3a",
-            "23bdb1ccef0c47b48e214eda819507ba"
-          ],
-          "edge_path": [
-            55
-          ]
-        },
         {
           "from_root": "671922d5a8b544e08cfec6d7fe7c97f6",
           "station_path": [
@@ -1972,9 +1811,7 @@
       ]
     },
     "24439ffbbf404f35abe636091d397d6b": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "4572aaf196264c9d90b844ace9c0ef89",
@@ -2001,9 +1838,7 @@
       ]
     },
     "31784b0484ef4a2f921dc915ce362fbb": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "c3a79292fd35472c9514c15a64344678",
@@ -2028,9 +1863,7 @@
       ]
     },
     "31b017b98d53403eabc5e88a681038bb": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "cad31d07b75140ba95b5a78fb6fcd057",
@@ -2057,10 +1890,18 @@
       ]
     },
     "3285cfd8d5d247a8befb00af1f370775": {
-      "levels": [
-        1
-      ],
+      "level": 1,
       "witness_paths": [
+        {
+          "from_root": "49fb76f7a0774dd3ad48b07cb1a43307",
+          "station_path": [
+            "49fb76f7a0774dd3ad48b07cb1a43307",
+            "3285cfd8d5d247a8befb00af1f370775"
+          ],
+          "edge_path": [
+            63
+          ]
+        },
         {
           "from_root": "a2948f193e57440292cf58b08752c7d2",
           "station_path": [
@@ -2074,9 +1915,7 @@
       ]
     },
     "3b3556e8ae8b43cba2dbca0e89612395": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "dcd66100fabd4e43a83de82005882c6c",
@@ -2099,23 +1938,11 @@
             216,
             219
           ]
-        },
-        {
-          "from_root": "de9280f33758486caaf27f17848a8352",
-          "station_path": [
-            "de9280f33758486caaf27f17848a8352",
-            "3b3556e8ae8b43cba2dbca0e89612395"
-          ],
-          "edge_path": [
-            219
-          ]
         }
       ]
     },
     "3e5dfe6c5c6a42d5a6f75c12c8a76662": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "050b83c4d29f4d00abbab44a038e4117",
@@ -2128,23 +1955,11 @@
             8,
             208
           ]
-        },
-        {
-          "from_root": "d5cebd17b80b43e3bf4628f7750b6281",
-          "station_path": [
-            "d5cebd17b80b43e3bf4628f7750b6281",
-            "3e5dfe6c5c6a42d5a6f75c12c8a76662"
-          ],
-          "edge_path": [
-            208
-          ]
         }
       ]
     },
     "3fa2869e4723469e84c0e3ddb28e7604": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "7e8a19939b81446f9d5d73b1653e3f68",
@@ -2181,9 +1996,7 @@
       ]
     },
     "40fce03aa77548d081a48e57f46b6c69": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "1e5a6ff089e7482b8ab148826d097a6c",
@@ -2208,9 +2021,7 @@
       ]
     },
     "44579dc7680043899ab9b254c319855e": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "231ec6b11ed542ab8912548405cb2f83",
@@ -2235,20 +2046,8 @@
       ]
     },
     "45b03d6d7514409a92e064c1d15f8750": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "00021fc76b2a42278c8db62556e06def",
-          "station_path": [
-            "00021fc76b2a42278c8db62556e06def",
-            "45b03d6d7514409a92e064c1d15f8750"
-          ],
-          "edge_path": [
-            1
-          ]
-        },
         {
           "from_root": "00021fc76b2a42278c8db62556e06def",
           "station_path": [
@@ -2274,9 +2073,7 @@
       ]
     },
     "464a039e747b409ca691302abd54b56d": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "9b0990a5ddb04d3986320109405da46d",
@@ -2301,9 +2098,7 @@
       ]
     },
     "483da773221044c9b10ec56d405305e4": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "4de1e59eeed2440ea95fd323de96ad6f",
@@ -2340,9 +2135,7 @@
       ]
     },
     "4aa922838bcc4f5f9e108d64d2a0973c": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "7ee1535042ed4c2a883aab768ecf1839",
@@ -2379,9 +2172,7 @@
       ]
     },
     "4ed5a47d44d743a99df1c40d5d5ae4ae": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "513bc950387248b3b632855146534995",
@@ -2418,9 +2209,7 @@
       ]
     },
     "53213a823a6c45e7bdbbbe1c08e08ebd": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0e4c0e8297c24f7a80604bbeff1b1aa1",
@@ -2447,34 +2236,11 @@
       ]
     },
     "54d834338ebe47158e534cbabc150089": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "126dcb44afc342028c85b6cfeb8ceb24",
-          "station_path": [
-            "126dcb44afc342028c85b6cfeb8ceb24",
-            "54d834338ebe47158e534cbabc150089"
-          ],
-          "edge_path": [
-            22
-          ]
-        },
-        {
-          "from_root": "d557936540a04c66bca6adcbca3ad283",
-          "station_path": [
-            "d557936540a04c66bca6adcbca3ad283",
-            "54d834338ebe47158e534cbabc150089"
-          ],
-          "edge_path": [
-            206
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "57fc9f3f1a2a4898b48842231df61b80": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "a509b0560b004dcd9ebc9784cc7caeb7",
@@ -2511,20 +2277,8 @@
       ]
     },
     "595bf8110fcf4c9a8d1cc8780298b88a": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "223adc9270554e42bdb360c3d5b72686",
-          "station_path": [
-            "223adc9270554e42bdb360c3d5b72686",
-            "25e0ddec75eb4a5390444842d1d5e2b1",
-            "595bf8110fcf4c9a8d1cc8780298b88a"
-          ],
-          "edge_path": [
-            36,
-            41
-          ]
-        },
         {
           "from_root": "25e0ddec75eb4a5390444842d1d5e2b1",
           "station_path": [
@@ -2538,9 +2292,7 @@
       ]
     },
     "596d1bc8300b44b3b9a82622d4a98d62": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "25b9fa6ad47f4de692f04577a8db1e70",
@@ -2551,21 +2303,11 @@
           "edge_path": [
             39
           ]
-        },
-        {
-          "from_root": "d7f83744fbb34e0db6e2bf08136a5633",
-          "station_path": [
-            "d7f83744fbb34e0db6e2bf08136a5633",
-            "596d1bc8300b44b3b9a82622d4a98d62"
-          ],
-          "edge_path": [
-            213
-          ]
         }
       ]
     },
     "5c660f7f971f416299fb223be77c786f": {
-      "levels": [],
+      "level": -1,
       "witness_paths": [
         {
           "from_root": "3c2c85c67d5446ea8c6155c8e4538487",
@@ -2602,9 +2344,7 @@
       ]
     },
     "5c8013c3735b4a52ba2084b0ec832359": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "368262ae03694dc48e297b417fd65afb",
@@ -2641,9 +2381,7 @@
       ]
     },
     "5d1d688d2030429fb7ee1962b893410e": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "768e4f222ab046128b11ebf554dccd19",
@@ -2680,9 +2418,7 @@
       ]
     },
     "5f78c06de8634cb8ac7f9603ae23fa56": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0d4f0d06fe5a4294b4b09d0922523a7c",
@@ -2719,20 +2455,8 @@
       ]
     },
     "64cae7f8bba446d28509cc205c480ef5": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "2a99421b41054438a1590a514dbc6a65",
-          "station_path": [
-            "2a99421b41054438a1590a514dbc6a65",
-            "64cae7f8bba446d28509cc205c480ef5"
-          ],
-          "edge_path": [
-            44
-          ]
-        },
         {
           "from_root": "c738c735b4b8415780501c2eae9bb856",
           "station_path": [
@@ -2758,9 +2482,7 @@
       ]
     },
     "7383b26ce43640f58d6b26f77fcfbd19": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "025a80836c9446d7bfd0181fb95d6114",
@@ -2787,9 +2509,7 @@
       ]
     },
     "77b9395185f34741a057ca571be16cae": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "1d100c6014244babba3f3043e9763a4d",
@@ -2814,9 +2534,7 @@
       ]
     },
     "79901d9ab7034aadad0a2bcd32ea1468": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "99a74dd397cb481bbe309ecbea79b7ce",
@@ -2853,20 +2571,8 @@
       ]
     },
     "7d895a1314fa445aafe3a6c97138ca9a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "0ffee57d17d849b78cdea049591f78d6",
-          "station_path": [
-            "0ffee57d17d849b78cdea049591f78d6",
-            "7d895a1314fa445aafe3a6c97138ca9a"
-          ],
-          "edge_path": [
-            20
-          ]
-        },
         {
           "from_root": "a9fa796d11de49e3b93acb1b420e666c",
           "station_path": [
@@ -2880,49 +2586,12 @@
       ]
     },
     "8146ab84a213474cb280a7c92f0d5383": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "3f296ca94921438e9c0ac545c80b1adf",
-          "station_path": [
-            "3f296ca94921438e9c0ac545c80b1adf",
-            "d757447f5b0f4adb802918aab07457aa",
-            "8146ab84a213474cb280a7c92f0d5383"
-          ],
-          "edge_path": [
-            56,
-            211
-          ]
-        },
-        {
-          "from_root": "d757447f5b0f4adb802918aab07457aa",
-          "station_path": [
-            "d757447f5b0f4adb802918aab07457aa",
-            "8146ab84a213474cb280a7c92f0d5383"
-          ],
-          "edge_path": [
-            211
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "83839f8770114b4cb9214799e93fc32d": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "93b20898c4634dcdb6655ffdca709b52",
-          "station_path": [
-            "93b20898c4634dcdb6655ffdca709b52",
-            "83839f8770114b4cb9214799e93fc32d"
-          ],
-          "edge_path": [
-            131
-          ]
-        },
         {
           "from_root": "93b20898c4634dcdb6655ffdca709b52",
           "station_path": [
@@ -2948,9 +2617,7 @@
       ]
     },
     "83c0e8410ad3480bb456c96d95ee8f28": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0ed6e156ab8548609a6c3cd43cf581b7",
@@ -2961,23 +2628,11 @@
           "edge_path": [
             18
           ]
-        },
-        {
-          "from_root": "831f6d4109fe49d3beec802efa28cb7b",
-          "station_path": [
-            "831f6d4109fe49d3beec802efa28cb7b",
-            "83c0e8410ad3480bb456c96d95ee8f28"
-          ],
-          "edge_path": [
-            120
-          ]
         }
       ]
     },
     "846b9d8545884ae8b456950eca252a81": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "2ab9d0a683814abfbaed8c1282283df8",
@@ -3014,9 +2669,7 @@
       ]
     },
     "848c022733804e8e8e726bcf721eaee5": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "49bd8f5817d040fd842dc60500da12da",
@@ -3053,18 +2706,8 @@
       ]
     },
     "8818623b9bbe426ead3945d91c7a3189": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "39710e9e8393418b8cd5d72963c6560f",
-          "station_path": [
-            "39710e9e8393418b8cd5d72963c6560f",
-            "8818623b9bbe426ead3945d91c7a3189"
-          ],
-          "edge_path": [
-            52
-          ]
-        },
         {
           "from_root": "39710e9e8393418b8cd5d72963c6560f",
           "station_path": [
@@ -3090,12 +2733,11 @@
       ]
     },
     "89b12ce3f1934fff8e3ae6280600fda8": {
-      "levels": []
+      "level": -1,
+      "witness_paths": []
     },
     "89cc1b5db4cf429f9c920a11df9a246a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "9182afc51865457fa2161b8bfe9f6aaf",
@@ -3132,9 +2774,7 @@
       ]
     },
     "8b9fe23fd6104dc69b6dd75e16290e8a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "21afe631566543fe86b136b00fcfc9ad",
@@ -3171,7 +2811,7 @@
       ]
     },
     "8cf512dce0ee415d99cf8e02244285b6": {
-      "levels": [],
+      "level": -1,
       "witness_paths": [
         {
           "from_root": "777cc359d0fb4c7d9ef4c20b7a84d896",
@@ -3208,9 +2848,7 @@
       ]
     },
     "8d876d1f0a824f719ed5834fc82d4feb": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0f9160e4bde84379b0202a785a3a8304",
@@ -3223,48 +2861,15 @@
             19,
             64
           ]
-        },
-        {
-          "from_root": "4cf2a754602a4cc6a252d0ed22100ff8",
-          "station_path": [
-            "4cf2a754602a4cc6a252d0ed22100ff8",
-            "8d876d1f0a824f719ed5834fc82d4feb"
-          ],
-          "edge_path": [
-            64
-          ]
         }
       ]
     },
     "92a71ccd730548089b1b6fc76c704fe7": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "47b47c40f1ba4f039e1e938167a6e685",
-          "station_path": [
-            "47b47c40f1ba4f039e1e938167a6e685",
-            "92a71ccd730548089b1b6fc76c704fe7"
-          ],
-          "edge_path": [
-            59
-          ]
-        },
-        {
-          "from_root": "5f33724449824b2bb131b419d245ce3c",
-          "station_path": [
-            "5f33724449824b2bb131b419d245ce3c",
-            "92a71ccd730548089b1b6fc76c704fe7"
-          ],
-          "edge_path": [
-            83
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "94eb90343f2e4601ad9a8dde6ceface9": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0c95ca4ab4034b7894d27eb908324e46",
@@ -3301,7 +2906,7 @@
       ]
     },
     "95a372b0a0d7441fba5f7253df24e5a0": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "abfc42ea59714a4e95ceb7683606343f",
@@ -3312,36 +2917,12 @@
           "edge_path": [
             173
           ]
-        },
-        {
-          "from_root": "d3c484ad7b164fa086ed973574ff9182",
-          "station_path": [
-            "d3c484ad7b164fa086ed973574ff9182",
-            "abfc42ea59714a4e95ceb7683606343f",
-            "95a372b0a0d7441fba5f7253df24e5a0"
-          ],
-          "edge_path": [
-            203,
-            173
-          ]
         }
       ]
     },
     "97cd5be03385419b828a209ef5df2848": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "04bc4df8eb2943a4b13263e0a924c6cc",
-          "station_path": [
-            "04bc4df8eb2943a4b13263e0a924c6cc",
-            "97cd5be03385419b828a209ef5df2848"
-          ],
-          "edge_path": [
-            6
-          ]
-        },
         {
           "from_root": "25f86c5dac454a93a9e727d1911428a9",
           "station_path": [
@@ -3355,36 +2936,11 @@
       ]
     },
     "97d7b3bbeb0b4ff78a3c4987a4863193": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "b7a7e683c1584258beb72e0800277ce6",
-          "station_path": [
-            "b7a7e683c1584258beb72e0800277ce6",
-            "ee243bf9079044af8614f5472cb69565",
-            "97d7b3bbeb0b4ff78a3c4987a4863193"
-          ],
-          "edge_path": [
-            178,
-            225
-          ]
-        },
-        {
-          "from_root": "ee243bf9079044af8614f5472cb69565",
-          "station_path": [
-            "ee243bf9079044af8614f5472cb69565",
-            "97d7b3bbeb0b4ff78a3c4987a4863193"
-          ],
-          "edge_path": [
-            225
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "9a51579f3f044fc3b0aea398620f1ad7": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "48e0f6a8d41347638ba510b2fea6a286",
@@ -3421,9 +2977,7 @@
       ]
     },
     "9b5ae194e6f544e88c54e4acdc321579": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0e84cb03374c4d4194cb38e15cd1f0f4",
@@ -3450,9 +3004,7 @@
       ]
     },
     "9cca98e617564aeabf9795b3126da354": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "8045bccf01a54863a02687946246f88c",
@@ -3479,48 +3031,11 @@
       ]
     },
     "9e4278a558ec4cdc9f1e602a725f4a44": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "58b5a5af33f24c7fa73a415c9edad2f0",
-          "station_path": [
-            "58b5a5af33f24c7fa73a415c9edad2f0",
-            "8c7559d8f38b4ae388c17c9c40357221",
-            "9e4278a558ec4cdc9f1e602a725f4a44"
-          ],
-          "edge_path": [
-            78,
-            126
-          ]
-        },
-        {
-          "from_root": "58b5a5af33f24c7fa73a415c9edad2f0",
-          "station_path": [
-            "58b5a5af33f24c7fa73a415c9edad2f0",
-            "9e4278a558ec4cdc9f1e602a725f4a44"
-          ],
-          "edge_path": [
-            79
-          ]
-        },
-        {
-          "from_root": "8c7559d8f38b4ae388c17c9c40357221",
-          "station_path": [
-            "8c7559d8f38b4ae388c17c9c40357221",
-            "9e4278a558ec4cdc9f1e602a725f4a44"
-          ],
-          "edge_path": [
-            126
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "a0062e2ea2df457ca7758fa0b78194b8": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "7de3827e6de4412a8ee47a79bdf0cd36",
@@ -3545,20 +3060,8 @@
       ]
     },
     "a25605a269674d7eabdf8aab5d3f1df5": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "7a046361b54f49a0a987a6610615da9a",
-          "station_path": [
-            "7a046361b54f49a0a987a6610615da9a",
-            "a25605a269674d7eabdf8aab5d3f1df5"
-          ],
-          "edge_path": [
-            107
-          ]
-        },
         {
           "from_root": "7a046361b54f49a0a987a6610615da9a",
           "station_path": [
@@ -3584,7 +3087,7 @@
       ]
     },
     "a27e77b6a85743a7a8d6909e0ec0cb8c": {
-      "levels": [],
+      "level": -1,
       "witness_paths": [
         {
           "from_root": "a0bfb87ba4ba449fa252076a6fa9e13b",
@@ -3621,9 +3124,7 @@
       ]
     },
     "a3e88e76ac7049dfbfb9d0a37c8fcdc6": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "53a3e94ac0944b65bab892dcae0cd320",
@@ -3660,9 +3161,7 @@
       ]
     },
     "a3f22cd67f5e43e3a43910e1356293d2": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "4dabc0efea1a434aad67993355920ca7",
@@ -3673,60 +3172,15 @@
           "edge_path": [
             65
           ]
-        },
-        {
-          "from_root": "ab9078272ce54e94923db5dc8931d79f",
-          "station_path": [
-            "ab9078272ce54e94923db5dc8931d79f",
-            "a3f22cd67f5e43e3a43910e1356293d2"
-          ],
-          "edge_path": [
-            171
-          ]
         }
       ]
     },
     "aa52d9c56c6a4cfcb22c05a440c22975": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "157c3894e7044f8390f97314a29bd166",
-          "station_path": [
-            "157c3894e7044f8390f97314a29bd166",
-            "aa52d9c56c6a4cfcb22c05a440c22975"
-          ],
-          "edge_path": [
-            24
-          ]
-        },
-        {
-          "from_root": "65e2b61b270a46ca884ff265c07355de",
-          "station_path": [
-            "65e2b61b270a46ca884ff265c07355de",
-            "157c3894e7044f8390f97314a29bd166",
-            "aa52d9c56c6a4cfcb22c05a440c22975"
-          ],
-          "edge_path": [
-            87,
-            24
-          ]
-        },
-        {
-          "from_root": "65e2b61b270a46ca884ff265c07355de",
-          "station_path": [
-            "65e2b61b270a46ca884ff265c07355de",
-            "aa52d9c56c6a4cfcb22c05a440c22975"
-          ],
-          "edge_path": [
-            88
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "ae35d364631746b891b68bf102522a2c": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "5389031892254d3ca4e7600425fe2d76",
@@ -3763,44 +3217,11 @@
       ]
     },
     "b064559127d24c38bcc2c44958a75a0d": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "6b95acf308cf42e4940d5e286bf3f1bc",
-          "station_path": [
-            "6b95acf308cf42e4940d5e286bf3f1bc",
-            "b064559127d24c38bcc2c44958a75a0d"
-          ],
-          "edge_path": [
-            95
-          ]
-        },
-        {
-          "from_root": "6b95acf308cf42e4940d5e286bf3f1bc",
-          "station_path": [
-            "6b95acf308cf42e4940d5e286bf3f1bc",
-            "c29c71a8b5e24347ad18fc969e98e16e",
-            "b064559127d24c38bcc2c44958a75a0d"
-          ],
-          "edge_path": [
-            96,
-            184
-          ]
-        },
-        {
-          "from_root": "c29c71a8b5e24347ad18fc969e98e16e",
-          "station_path": [
-            "c29c71a8b5e24347ad18fc969e98e16e",
-            "b064559127d24c38bcc2c44958a75a0d"
-          ],
-          "edge_path": [
-            184
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "b20865d7f5244cfbb902a3ba527dd331": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "4f8e41513f3943d79552b39e196661df",
@@ -3811,21 +3232,11 @@
           "edge_path": [
             68
           ]
-        },
-        {
-          "from_root": "f4d227c52abc4b19bba62252ee86f64e",
-          "station_path": [
-            "f4d227c52abc4b19bba62252ee86f64e",
-            "b20865d7f5244cfbb902a3ba527dd331"
-          ],
-          "edge_path": [
-            232
-          ]
         }
       ]
     },
     "b47415979ef44a37a62eb2e35b07e2b8": {
-      "levels": [],
+      "level": 0,
       "witness_paths": [
         {
           "from_root": "3317fa2729574d1ab214223e803dab7b",
@@ -3837,16 +3248,6 @@
           "edge_path": [
             47,
             91
-          ]
-        },
-        {
-          "from_root": "3317fa2729574d1ab214223e803dab7b",
-          "station_path": [
-            "3317fa2729574d1ab214223e803dab7b",
-            "b47415979ef44a37a62eb2e35b07e2b8"
-          ],
-          "edge_path": [
-            48
           ]
         },
         {
@@ -3862,8 +3263,18 @@
       ]
     },
     "b69ef4e8db1446c992ba090fcc403101": {
-      "levels": [],
+      "level": 0,
       "witness_paths": [
+        {
+          "from_root": "c72ffbf4d82c467cb964521eff881b57",
+          "station_path": [
+            "c72ffbf4d82c467cb964521eff881b57",
+            "b69ef4e8db1446c992ba090fcc403101"
+          ],
+          "edge_path": [
+            187
+          ]
+        },
         {
           "from_root": "a1fe6db1293343f6b33ba411ddd42ef0",
           "station_path": [
@@ -3875,23 +3286,11 @@
             149,
             187
           ]
-        },
-        {
-          "from_root": "c72ffbf4d82c467cb964521eff881b57",
-          "station_path": [
-            "c72ffbf4d82c467cb964521eff881b57",
-            "b69ef4e8db1446c992ba090fcc403101"
-          ],
-          "edge_path": [
-            187
-          ]
         }
       ]
     },
     "b7f9b0d3fe9b4992bee61f56bc985be6": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "23e76a35fc1a4f20a49cc40bd73491f0",
@@ -3902,21 +3301,11 @@
           "edge_path": [
             38
           ]
-        },
-        {
-          "from_root": "c797a80359734735a13937ed0e450e7a",
-          "station_path": [
-            "c797a80359734735a13937ed0e450e7a",
-            "b7f9b0d3fe9b4992bee61f56bc985be6"
-          ],
-          "edge_path": [
-            190
-          ]
         }
       ]
     },
     "b81c1e2a5b84492d95863a2a93b0169b": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "418128df721643dca5681df56b6d2f2a",
@@ -3943,20 +3332,8 @@
       ]
     },
     "bcc8631a9268447d93de3904e4b71785": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "33d56adf4f8b42038daba6003bb227f7",
-          "station_path": [
-            "33d56adf4f8b42038daba6003bb227f7",
-            "bcc8631a9268447d93de3904e4b71785"
-          ],
-          "edge_path": [
-            49
-          ]
-        },
         {
           "from_root": "fc691ab8b9c644dfbe38d330b6cf3044",
           "station_path": [
@@ -3970,34 +3347,11 @@
       ]
     },
     "bcf08d3bbe6c4e9bb3578dfc3707c693": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "8ca9a31e76c04e41b3dcdaf2d421563c",
-          "station_path": [
-            "8ca9a31e76c04e41b3dcdaf2d421563c",
-            "bcf08d3bbe6c4e9bb3578dfc3707c693"
-          ],
-          "edge_path": [
-            127
-          ]
-        },
-        {
-          "from_root": "a3a0ba053c0b4f4284217f8debf39ca6",
-          "station_path": [
-            "a3a0ba053c0b4f4284217f8debf39ca6",
-            "bcf08d3bbe6c4e9bb3578dfc3707c693"
-          ],
-          "edge_path": [
-            156
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "bd7ffa9f95e84ea1a85f45f01ecc2d2e": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "0abd8a0c77ea4227b85f3c1451216139",
@@ -4020,21 +3374,11 @@
           "edge_path": [
             11
           ]
-        },
-        {
-          "from_root": "69946faf0bb148a8a26ca68a8fda729b",
-          "station_path": [
-            "69946faf0bb148a8a26ca68a8fda729b",
-            "bd7ffa9f95e84ea1a85f45f01ecc2d2e"
-          ],
-          "edge_path": [
-            94
-          ]
         }
       ]
     },
     "c0a97cdfd07c41a0ab138cefbe3b7900": {
-      "levels": [],
+      "level": -1,
       "witness_paths": [
         {
           "from_root": "73740d2b5ead4df0a8a5669b92b85fdb",
@@ -4071,9 +3415,7 @@
       ]
     },
     "c1462a98325e4945b7872b5b45fd1578": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "6d95a428c22f4ff8bbb6ea366fcadaf0",
@@ -4100,9 +3442,7 @@
       ]
     },
     "c532f86c7f4343958f92bf237a3066ec": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "640f759bb6e04be2860edfa153654157",
@@ -4113,23 +3453,11 @@
           "edge_path": [
             86
           ]
-        },
-        {
-          "from_root": "afe0ee83402b44688623bfadddac94a4",
-          "station_path": [
-            "afe0ee83402b44688623bfadddac94a4",
-            "c532f86c7f4343958f92bf237a3066ec"
-          ],
-          "edge_path": [
-            175
-          ]
         }
       ]
     },
     "c550f971fb474aaaa4b36360f2ee97ed": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "20a7a852767f4073b4d5a4dfd73d88f4",
@@ -4154,9 +3482,7 @@
       ]
     },
     "c85a4ffa276f4532910eecd7ddd70554": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "174480b993b1421bb239f15e7269ff20",
@@ -4181,18 +3507,8 @@
       ]
     },
     "d14b03da7ea54d2cb32c3f05f936595b": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "abea2dd1fe6f4234806f95df6cdf2c66",
-          "station_path": [
-            "abea2dd1fe6f4234806f95df6cdf2c66",
-            "d14b03da7ea54d2cb32c3f05f936595b"
-          ],
-          "edge_path": [
-            172
-          ]
-        },
         {
           "from_root": "d08efd1a9967450a8f0552f17804f458",
           "station_path": [
@@ -4208,9 +3524,7 @@
       ]
     },
     "d219cbcb3bbf430aa78c3bc09894e10d": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "595624bba6c24598859c0238d3f641d0",
@@ -4247,9 +3561,7 @@
       ]
     },
     "d2b3a6be12f246d7b8f231414b8a7bd5": {
-      "levels": [
-        0
-      ],
+      "level": 0,
       "witness_paths": [
         {
           "from_root": "bbb66dbc03fe4857aeca1a7463c1b700",
@@ -4276,9 +3588,7 @@
       ]
     },
     "d33969d52c7742f9b076d9b791b31dc3": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "97885109e5864966a1dc325e83ba39b0",
@@ -4289,48 +3599,15 @@
           "edge_path": [
             136
           ]
-        },
-        {
-          "from_root": "aad1801fcee04f3eb1e2ed30abf6bd25",
-          "station_path": [
-            "aad1801fcee04f3eb1e2ed30abf6bd25",
-            "d33969d52c7742f9b076d9b791b31dc3"
-          ],
-          "edge_path": [
-            170
-          ]
         }
       ]
     },
     "d5a5599539e64209aeea100837ddb103": {
-      "levels": [],
-      "witness_paths": [
-        {
-          "from_root": "6d64fe15a9974d1ba77273eddf802641",
-          "station_path": [
-            "6d64fe15a9974d1ba77273eddf802641",
-            "d5a5599539e64209aeea100837ddb103"
-          ],
-          "edge_path": [
-            98
-          ]
-        },
-        {
-          "from_root": "7c2d09a42a834faf86aee3cdc0920d36",
-          "station_path": [
-            "7c2d09a42a834faf86aee3cdc0920d36",
-            "d5a5599539e64209aeea100837ddb103"
-          ],
-          "edge_path": [
-            109
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "d60610d460534c3ea51d81442067db27": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "82409392422f40b8a510851a17d780ab",
@@ -4342,16 +3619,6 @@
           "edge_path": [
             118,
             168
-          ]
-        },
-        {
-          "from_root": "82409392422f40b8a510851a17d780ab",
-          "station_path": [
-            "82409392422f40b8a510851a17d780ab",
-            "d60610d460534c3ea51d81442067db27"
-          ],
-          "edge_path": [
-            119
           ]
         },
         {
@@ -4367,7 +3634,7 @@
       ]
     },
     "dae66cc972e940ae9b3cf7f31d267c87": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "1ae93c80dd3f4ae7ac1c8dd5c17d4afd",
@@ -4394,9 +3661,7 @@
       ]
     },
     "debc00cc02544a81b573ef3e5289da2a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "76931a211d60471baf3085572154278e",
@@ -4421,9 +3686,7 @@
       ]
     },
     "e40f707a3d694f3598221008026cee60": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "2abcffa6dff440ea8f52bf55d9847802",
@@ -4448,20 +3711,8 @@
       ]
     },
     "e60845b5c5304b61bf89e713168a360a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "6cee17e5f6504f25b304d0c7eb00e512",
-          "station_path": [
-            "6cee17e5f6504f25b304d0c7eb00e512",
-            "e60845b5c5304b61bf89e713168a360a"
-          ],
-          "edge_path": [
-            97
-          ]
-        },
         {
           "from_root": "b23b368cc32b46a1897cb1f134adb3fd",
           "station_path": [
@@ -4475,9 +3726,7 @@
       ]
     },
     "e8fc5a49c0c047939b42a205d8f32cfc": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "16becac183504335ba0d5a0383a1fbc1",
@@ -4514,48 +3763,11 @@
       ]
     },
     "ed698629d219457c987614283c589f2e": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "3843ffbed2884120881adf29e9cdf6a0",
-          "station_path": [
-            "3843ffbed2884120881adf29e9cdf6a0",
-            "ed698629d219457c987614283c589f2e"
-          ],
-          "edge_path": [
-            51
-          ]
-        },
-        {
-          "from_root": "61e4117b17c64659a8cfa39cf3c14c6a",
-          "station_path": [
-            "61e4117b17c64659a8cfa39cf3c14c6a",
-            "3843ffbed2884120881adf29e9cdf6a0",
-            "ed698629d219457c987614283c589f2e"
-          ],
-          "edge_path": [
-            84,
-            51
-          ]
-        },
-        {
-          "from_root": "61e4117b17c64659a8cfa39cf3c14c6a",
-          "station_path": [
-            "61e4117b17c64659a8cfa39cf3c14c6a",
-            "ed698629d219457c987614283c589f2e"
-          ],
-          "edge_path": [
-            85
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     },
     "ee23115348854a9c881095b9032e0f72": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "02a0a365b3d04f6a93b98525db56c974",
@@ -4580,9 +3792,7 @@
       ]
     },
     "fa81372d68de46478e79bdafe19a0549": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "9c2ecbe703914ae6aa501601fb46c17e",
@@ -4609,20 +3819,8 @@
       ]
     },
     "fb1039d66cb84dedbaf742c263b798ea": {
-      "levels": [],
+      "level": 1,
       "witness_paths": [
-        {
-          "from_root": "1996c2b624e6432e9c7c5c56d56f048a",
-          "station_path": [
-            "1996c2b624e6432e9c7c5c56d56f048a",
-            "a59523488dca4d5a9e4efd040556f3dd",
-            "fb1039d66cb84dedbaf742c263b798ea"
-          ],
-          "edge_path": [
-            30,
-            161
-          ]
-        },
         {
           "from_root": "a59523488dca4d5a9e4efd040556f3dd",
           "station_path": [
@@ -4636,33 +3834,8 @@
       ]
     },
     "fe9ca671c1db4177937d9e0a6564bbb5": {
-      "levels": [
-        0
-      ],
-      "witness_paths": [
-        {
-          "from_root": "8507edcdb7fc444c82149dac68faf9ff",
-          "station_path": [
-            "8507edcdb7fc444c82149dac68faf9ff",
-            "ca15b711723d47d9b7ac414d40b32ee5",
-            "fe9ca671c1db4177937d9e0a6564bbb5"
-          ],
-          "edge_path": [
-            121,
-            194
-          ]
-        },
-        {
-          "from_root": "ca15b711723d47d9b7ac414d40b32ee5",
-          "station_path": [
-            "ca15b711723d47d9b7ac414d40b32ee5",
-            "fe9ca671c1db4177937d9e0a6564bbb5"
-          ],
-          "edge_path": [
-            194
-          ]
-        }
-      ]
+      "level": -1,
+      "witness_paths": []
     }
   }
 }

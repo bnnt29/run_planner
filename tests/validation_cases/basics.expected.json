@@ -13,13 +13,13 @@
       "state": "VALID"
     },
     "5": {
-      "state": "INVALID"
+      "state": "CONDITIONAL_INVALID"
     },
     "6": {
       "state": "INVALID"
     },
     "7": {
-      "state": "INVALID"
+      "state": "CONDITIONAL_INVALID"
     },
     "8": {
       "state": "VALID"
@@ -48,15 +48,37 @@
   },
   "stations": {
     "0f9c530729584afb8081bfcf20a3287d": {
-      "levels": []
+      "level": -1,
+      "witness_paths": [
+        {
+          "from_root": "0ab9e9ce63254ce4bfd4ff814e3b41a3",
+          "station_path": [
+            "0ab9e9ce63254ce4bfd4ff814e3b41a3",
+            "0f9c530729584afb8081bfcf20a3287d"
+          ],
+          "edge_path": [
+            1
+          ]
+        }
+      ]
     },
     "13d6cef79ff44fdb927559989950d164": {
-      "levels": []
+      "level": -1,
+      "witness_paths": [
+        {
+          "from_root": "7f54774cf8eb4da8a9badce3bd8a055f",
+          "station_path": [
+            "7f54774cf8eb4da8a9badce3bd8a055f",
+            "13d6cef79ff44fdb927559989950d164"
+          ],
+          "edge_path": [
+            6
+          ]
+        }
+      ]
     },
     "17eb503404e343f1a9eb0fac4096c003": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "facc6bcb7c264e0593165a38e7463ea4",
@@ -71,12 +93,22 @@
       ]
     },
     "22198900142841eb93448c7bf8dc9eb8": {
-      "levels": []
+      "level": -1,
+      "witness_paths": [
+        {
+          "from_root": "3131f23acb014ccba18f8b32901bc40b",
+          "station_path": [
+            "3131f23acb014ccba18f8b32901bc40b",
+            "22198900142841eb93448c7bf8dc9eb8"
+          ],
+          "edge_path": [
+            2
+          ]
+        }
+      ]
     },
     "22fcb2a5de534007b55ec10940698dcb": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "8f241cfe89d040c69e899c8282457aa1",
@@ -91,21 +123,43 @@
       ]
     },
     "4004528183ff4edf8f20811910745877": {
-      "levels": []
+      "level": -1,
+      "witness_paths": [
+        {
+          "from_root": "d0754120b1f94d15beca6d6ca69c1a5f",
+          "station_path": [
+            "d0754120b1f94d15beca6d6ca69c1a5f",
+            "4004528183ff4edf8f20811910745877"
+          ],
+          "edge_path": [
+            14
+          ]
+        }
+      ]
     },
     "459655089b7d4c869fe38084c39c70cb": {
-      "levels": []
+      "level": -1,
+      "witness_paths": [
+        {
+          "from_root": "3c9cccd411e749799b9860c53bca90d7",
+          "station_path": [
+            "3c9cccd411e749799b9860c53bca90d7",
+            "459655089b7d4c869fe38084c39c70cb"
+          ],
+          "edge_path": [
+            3
+          ]
+        }
+      ]
     },
     "52705cf925d24adc9c60118b230beacc": {
-      "levels": []
+      "level": -1
     },
     "5558ac34c2b6489eafaadf270a787f9c": {
-      "levels": []
+      "level": -1
     },
     "b668c7a18c4749709797974260de1d57": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "c36f0940997f41c9a0082e6ee57fa078",
@@ -120,9 +174,7 @@
       ]
     },
     "bf3379b00a30410ca49138157218638a": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "c806f5739e3b4b7489ceb2117ec9378b",
@@ -137,9 +189,7 @@
       ]
     },
     "d9c1c30329954babbad1d4c614ccf500": {
-      "levels": [
-        0
-      ],
+      "level": 1,
       "witness_paths": [
         {
           "from_root": "4ddbf3b5d73645f08dfb051f16118913",
@@ -154,7 +204,7 @@
       ]
     },
     "f32b6446acf446d0bc05e93f010e51f9": {
-      "levels": []
+      "level": -1
     }
   }
 }
